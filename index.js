@@ -45,14 +45,25 @@ const comando = new SlashCommandBuilder()
   )
   .setDMPermission(false);
 
+const comandoDevolver = new SlashCommandBuilder()
+  .setName('devolver')
+  .setDescription('Devolve este ticket para a categoria de atendimento (só ADM)')
+  .addStringOption((o) =>
+    o
+      .setName('observacao')
+      .setDescription('Orientação para o atendimento (opcional)')
+      .setMaxLength(500),
+  )
+  .setDMPermission(false);
+
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 client.once(Events.ClientReady, async (c) => {
   const rest = new REST().setToken(cfg.token);
   await rest.put(Routes.applicationGuildCommands(cfg.clientId, cfg.guildId), {
-    body: [comando.toJSON()],
+    body: [comando.toJSON(), comandoDevolver.toJSON()],
   });
-  console.log(`Online como ${c.user.tag} — /escalonar registrado.`);
+  console.log(`Online como ${c.user.tag} — /escalonar e /devolver registrados.`);
 });
 
 client.on(Events.InteractionCreate, async (i) => {
@@ -149,6 +160,88 @@ client.on(Events.InteractionCreate, async (i) => {
   } catch (err) {
     console.error('Erro ao escalonar:', err);
     await i.editReply('Falha ao escalonar. Verifique as permissões do bot nas duas categorias.');
+  }
+});
+
+client.on(Events.InteractionCreate, async (i) => {
+  if (!i.isChatInputCommand() || i.commandName !== 'devolver') return;
+
+  const negar = (content) => i.reply({ content, flags: MessageFlags.Ephemeral });
+  const ch = i.channel;
+
+  // 1) Só ADM
+  if (!i.member.permissions.has('Administrator') && !i.member.roles.cache.has(cfg.cargoAdm)) {
+    return negar('Só a administração pode devolver tickets.');
+  }
+
+  // 2) Precisa estar na categoria de escalonados
+  if (ch?.type !== ChannelType.GuildText || ch.parentId !== cfg.catEscalonado) {
+    return negar('Este comando só funciona dentro de um ticket da categoria de escalonados.');
+  }
+
+  // 3) Categoria de destino (atendimento)
+  await i.guild.channels.fetch();
+  const destino = i.guild.channels.cache.get(cfg.catAtendimento);
+  if (!destino || destino.type !== ChannelType.GuildCategory) {
+    return negar('Categoria de atendimento não encontrada. Confira o .env.');
+  }
+  if (destino.children.cache.size >= 50) {
+    return negar('A categoria de atendimento está cheia (limite de 50 canais do Discord).');
+  }
+
+  await i.deferReply({ flags: MessageFlags.Ephemeral });
+  const obs = i.options.getString('observacao');
+
+  try {
+    await ch.setParent(destino, {
+      lockPermissions: false,
+      reason: `Devolvido por ${i.user.tag}`,
+    });
+
+    // Recrutador/Moderador voltam a ver e responder
+    for (const id of cfg.cargosAtendimento) {
+      await ch.permissionOverwrites.edit(id, {
+        ViewChannel: true,
+        SendMessages: true,
+        ReadMessageHistory: true,
+      });
+    }
+
+    const embed = new EmbedBuilder()
+      .setColor(0x2ecc71)
+      .setTitle('Ticket devolvido ao atendimento')
+      .addFields({ name: 'Devolvido por', value: `${i.user}`, inline: true })
+      .setTimestamp();
+    if (obs) embed.addFields({ name: 'Observação', value: obs });
+
+    const mencoes = cfg.cargosAtendimento.map((id) => `<@&${id}>`).join(' ');
+    await ch.send({
+      content: `${mencoes} este ticket foi devolvido pela administração.`.trim(),
+      embeds: [embed],
+      allowedMentions: { roles: cfg.cargosAtendimento },
+    });
+
+    if (cfg.logChannel) {
+      const log = i.guild.channels.cache.get(cfg.logChannel);
+      await log?.send({
+        embeds: [
+          new EmbedBuilder()
+            .setColor(0x2ecc71)
+            .setTitle('Devolução')
+            .addFields(
+              { name: 'Ticket', value: `${ch} (${ch.name})`, inline: true },
+              { name: 'Por', value: `${i.user}`, inline: true },
+              { name: 'Observação', value: obs ?? '—' },
+            )
+            .setTimestamp(),
+        ],
+      });
+    }
+
+    await i.editReply('Ticket devolvido para o atendimento.');
+  } catch (err) {
+    console.error('Erro ao devolver:', err);
+    await i.editReply('Falha ao devolver. Verifique as permissões do bot nas duas categorias.');
   }
 });
 
