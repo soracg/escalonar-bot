@@ -71,9 +71,10 @@ const comandoDevolver = new SlashCommandBuilder()
   .setDescription('Devolve este ticket para a categoria de atendimento (só ADM)')
   .addStringOption((o) =>
     o
-      .setName('observacao')
-      .setDescription('Orientação para o atendimento (opcional)')
-      .setMaxLength(500),
+      .setName('motivo')
+      .setDescription('Motivo da devolução ao atendimento')
+      .setMaxLength(500)
+      .setRequired(true),
   )
   .setDMPermission(false);
 
@@ -221,7 +222,7 @@ client.on(Events.InteractionCreate, async (i) => {
   }
 
   await i.deferReply({ flags: EPH });
-  const obs = i.options.getString('observacao');
+  const motivo = i.options.getString('motivo', true);
 
   try {
     await ch.setParent(destino, {
@@ -243,10 +244,12 @@ client.on(Events.InteractionCreate, async (i) => {
       .setAuthor(autor(i, 'Devolvido por'))
       .setTitle('Ticket devolvido ao atendimento')
       .setDescription('A administração devolveu este ticket para continuidade do atendimento.')
-      .addFields({ name: 'Status', value: 'Em atendimento', inline: true })
+      .addFields(
+        { name: 'Motivo', value: citar(motivo) },
+        { name: 'Status', value: 'Em atendimento', inline: true },
+      )
       .setFooter({ text: RODAPE })
       .setTimestamp();
-    if (obs) embed.spliceFields(0, 0, { name: 'Observação', value: citar(obs) });
 
     const mencoes = cfg.cargosAtendimento.map((id) => `<@&${id}>`).join(' ');
     await ch.send({
@@ -263,7 +266,7 @@ client.on(Events.InteractionCreate, async (i) => {
         .addFields(
           { name: 'Ticket', value: `${ch}\n\`#${ch.name}\``, inline: true },
           { name: 'Responsável', value: `${i.user}`, inline: true },
-          { name: 'Observação', value: obs ? citar(obs) : '—' },
+          { name: 'Motivo', value: citar(motivo) },
         )
         .setFooter({ text: RODAPE })
         .setTimestamp(),
