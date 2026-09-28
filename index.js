@@ -33,6 +33,27 @@ for (const k of ['token', 'clientId', 'guildId', 'catAtendimento', 'catEscalonad
   }
 }
 
+// ---------- Identidade visual ----------
+const COR = { escalonado: 0xf59e0b, devolvido: 0x22c55e, ok: 0x3b82f6, erro: 0xef4444 };
+const RODAPE = 'Caveiras • Sistema de Tickets';
+const citar = (texto) => `>>> ${texto}`;
+const EPH = MessageFlags.Ephemeral;
+
+const aviso = (cor, titulo, descricao) =>
+  new EmbedBuilder().setColor(cor).setTitle(titulo).setDescription(descricao);
+
+const autor = (i, prefixo) => ({
+  name: `${prefixo} ${i.member?.displayName ?? i.user.username}`,
+  iconURL: i.user.displayAvatarURL(),
+});
+
+async function registrar(guild, embed) {
+  if (!cfg.logChannel) return;
+  const canal = guild.channels.cache.get(cfg.logChannel);
+  await canal?.send({ embeds: [embed] }).catch((e) => console.error('Falha no log:', e.message));
+}
+
+// ---------- Comandos ----------
 const comando = new SlashCommandBuilder()
   .setName('escalonar')
   .setDescription('Escalona este ticket para a administração')
@@ -66,10 +87,12 @@ client.once(Events.ClientReady, async (c) => {
   console.log(`Online como ${c.user.tag} — /escalonar e /devolver registrados.`);
 });
 
+// ---------- /escalonar ----------
 client.on(Events.InteractionCreate, async (i) => {
   if (!i.isChatInputCommand() || i.commandName !== 'escalonar') return;
 
-  const negar = (content) => i.reply({ content, flags: MessageFlags.Ephemeral });
+  const negar = (descricao, titulo = 'Não foi possível concluir') =>
+    i.reply({ embeds: [aviso(COR.erro, titulo, descricao)], flags: EPH });
   const ch = i.channel;
 
   // 1) Precisa ser um ticket na categoria de atendimento
@@ -86,7 +109,7 @@ client.on(Events.InteractionCreate, async (i) => {
     console.log(
       `[perm] negado para ${i.user.tag} | cargos do usuário: ${[...i.member.roles.cache.keys()].join(',')} | permitidos: ${permitidos.join(',')}`,
     );
-    return negar('Você não tem permissão para escalonar tickets.');
+    return negar('Você não tem permissão para escalonar tickets.', 'Acesso negado');
   }
 
   // 3) Categoria de destino
@@ -99,7 +122,7 @@ client.on(Events.InteractionCreate, async (i) => {
     return negar('A categoria de escalonados está cheia (limite de 50 canais do Discord).');
   }
 
-  await i.deferReply({ flags: MessageFlags.Ephemeral });
+  await i.deferReply({ flags: EPH });
   const motivo = i.options.getString('motivo', true);
 
   try {
@@ -125,53 +148,61 @@ client.on(Events.InteractionCreate, async (i) => {
     }
 
     const embed = new EmbedBuilder()
-      .setColor(0xe67e22)
+      .setColor(COR.escalonado)
+      .setAuthor(autor(i, 'Escalonado por'))
       .setTitle('Ticket escalonado')
+      .setDescription('Este atendimento foi encaminhado à administração para análise.')
       .addFields(
-        { name: 'Escalonado por', value: `${i.user}`, inline: true },
-        { name: 'Motivo', value: motivo },
+        { name: 'Motivo', value: citar(motivo) },
+        { name: 'Status', value: 'Aguardando administração', inline: true },
       )
+      .setFooter({ text: RODAPE })
       .setTimestamp();
 
     await ch.send({
-      content: `<@&${cfg.cargoAdm}> este ticket foi escalonado para a administração.`,
+      content: `<@&${cfg.cargoAdm}> novo ticket escalonado aguardando análise.`,
       embeds: [embed],
       allowedMentions: { roles: [cfg.cargoAdm] },
     });
 
-    if (cfg.logChannel) {
-      const log = i.guild.channels.cache.get(cfg.logChannel);
-      await log?.send({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(0xe67e22)
-            .setTitle('Escalonamento')
-            .addFields(
-              { name: 'Ticket', value: `${ch} (${ch.name})`, inline: true },
-              { name: 'Por', value: `${i.user}`, inline: true },
-              { name: 'Motivo', value: motivo ?? '—' },
-            )
-            .setTimestamp(),
-        ],
-      });
-    }
+    await registrar(
+      i.guild,
+      new EmbedBuilder()
+        .setColor(COR.escalonado)
+        .setTitle('Registro • Escalonamento')
+        .addFields(
+          { name: 'Ticket', value: `${ch}\n\`#${ch.name}\``, inline: true },
+          { name: 'Responsável', value: `${i.user}`, inline: true },
+          { name: 'Motivo', value: citar(motivo) },
+        )
+        .setFooter({ text: RODAPE })
+        .setTimestamp(),
+    );
 
-    await i.editReply('Ticket escalonado para a administração.');
+    await i.editReply({
+      embeds: [aviso(COR.ok, 'Ticket escalonado', 'O ticket foi encaminhado à administração.')],
+    });
   } catch (err) {
     console.error('Erro ao escalonar:', err);
-    await i.editReply('Falha ao escalonar. Verifique as permissões do bot nas duas categorias.');
+    await i.editReply({
+      embeds: [
+        aviso(COR.erro, 'Falha ao escalonar', 'Verifique as permissões do bot nas duas categorias.'),
+      ],
+    });
   }
 });
 
+// ---------- /devolver ----------
 client.on(Events.InteractionCreate, async (i) => {
   if (!i.isChatInputCommand() || i.commandName !== 'devolver') return;
 
-  const negar = (content) => i.reply({ content, flags: MessageFlags.Ephemeral });
+  const negar = (descricao, titulo = 'Não foi possível concluir') =>
+    i.reply({ embeds: [aviso(COR.erro, titulo, descricao)], flags: EPH });
   const ch = i.channel;
 
   // 1) Só ADM
   if (!i.member.permissions.has('Administrator') && !i.member.roles.cache.has(cfg.cargoAdm)) {
-    return negar('Só a administração pode devolver tickets.');
+    return negar('Só a administração pode devolver tickets.', 'Acesso negado');
   }
 
   // 2) Precisa estar na categoria de escalonados
@@ -189,7 +220,7 @@ client.on(Events.InteractionCreate, async (i) => {
     return negar('A categoria de atendimento está cheia (limite de 50 canais do Discord).');
   }
 
-  await i.deferReply({ flags: MessageFlags.Ephemeral });
+  await i.deferReply({ flags: EPH });
   const obs = i.options.getString('observacao');
 
   try {
@@ -208,40 +239,46 @@ client.on(Events.InteractionCreate, async (i) => {
     }
 
     const embed = new EmbedBuilder()
-      .setColor(0x2ecc71)
+      .setColor(COR.devolvido)
+      .setAuthor(autor(i, 'Devolvido por'))
       .setTitle('Ticket devolvido ao atendimento')
-      .addFields({ name: 'Devolvido por', value: `${i.user}`, inline: true })
+      .setDescription('A administração devolveu este ticket para continuidade do atendimento.')
+      .addFields({ name: 'Status', value: 'Em atendimento', inline: true })
+      .setFooter({ text: RODAPE })
       .setTimestamp();
-    if (obs) embed.addFields({ name: 'Observação', value: obs });
+    if (obs) embed.spliceFields(0, 0, { name: 'Observação', value: citar(obs) });
 
     const mencoes = cfg.cargosAtendimento.map((id) => `<@&${id}>`).join(' ');
     await ch.send({
-      content: `${mencoes} este ticket foi devolvido pela administração.`.trim(),
+      content: `${mencoes} ticket devolvido ao atendimento.`.trim(),
       embeds: [embed],
       allowedMentions: { roles: cfg.cargosAtendimento },
     });
 
-    if (cfg.logChannel) {
-      const log = i.guild.channels.cache.get(cfg.logChannel);
-      await log?.send({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(0x2ecc71)
-            .setTitle('Devolução')
-            .addFields(
-              { name: 'Ticket', value: `${ch} (${ch.name})`, inline: true },
-              { name: 'Por', value: `${i.user}`, inline: true },
-              { name: 'Observação', value: obs ?? '—' },
-            )
-            .setTimestamp(),
-        ],
-      });
-    }
+    await registrar(
+      i.guild,
+      new EmbedBuilder()
+        .setColor(COR.devolvido)
+        .setTitle('Registro • Devolução')
+        .addFields(
+          { name: 'Ticket', value: `${ch}\n\`#${ch.name}\``, inline: true },
+          { name: 'Responsável', value: `${i.user}`, inline: true },
+          { name: 'Observação', value: obs ? citar(obs) : '—' },
+        )
+        .setFooter({ text: RODAPE })
+        .setTimestamp(),
+    );
 
-    await i.editReply('Ticket devolvido para o atendimento.');
+    await i.editReply({
+      embeds: [aviso(COR.ok, 'Ticket devolvido', 'O ticket voltou para a categoria de atendimento.')],
+    });
   } catch (err) {
     console.error('Erro ao devolver:', err);
-    await i.editReply('Falha ao devolver. Verifique as permissões do bot nas duas categorias.');
+    await i.editReply({
+      embeds: [
+        aviso(COR.erro, 'Falha ao devolver', 'Verifique as permissões do bot nas duas categorias.'),
+      ],
+    });
   }
 });
 
