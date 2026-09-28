@@ -37,7 +37,11 @@ const comando = new SlashCommandBuilder()
   .setName('escalonar')
   .setDescription('Escalona este ticket para a administração')
   .addStringOption((o) =>
-    o.setName('motivo').setDescription('Motivo do escalonamento (opcional)').setMaxLength(500),
+    o
+      .setName('motivo')
+      .setDescription('Motivo do escalonamento')
+      .setMaxLength(500)
+      .setRequired(true),
   )
   .setDMPermission(false);
 
@@ -64,7 +68,13 @@ client.on(Events.InteractionCreate, async (i) => {
 
   // 2) Só Recrutador/Moderador/ADM
   const permitidos = [...cfg.cargosAtendimento, cfg.cargoAdm];
-  if (!i.member.roles.cache.some((r) => permitidos.includes(r.id))) {
+  if (
+    !i.member.permissions.has('Administrator') &&
+    !i.member.roles.cache.some((r) => permitidos.includes(r.id))
+  ) {
+    console.log(
+      `[perm] negado para ${i.user.tag} | cargos do usuário: ${[...i.member.roles.cache.keys()].join(',')} | permitidos: ${permitidos.join(',')}`,
+    );
     return negar('Você não tem permissão para escalonar tickets.');
   }
 
@@ -79,7 +89,7 @@ client.on(Events.InteractionCreate, async (i) => {
   }
 
   await i.deferReply({ flags: MessageFlags.Ephemeral });
-  const motivo = i.options.getString('motivo');
+  const motivo = i.options.getString('motivo', true);
 
   try {
     // Move sem sincronizar (preserva o acesso de quem abriu o ticket)
@@ -106,12 +116,14 @@ client.on(Events.InteractionCreate, async (i) => {
     const embed = new EmbedBuilder()
       .setColor(0xe67e22)
       .setTitle('Ticket escalonado')
-      .setDescription(`Escalonado por ${i.user} para a administração.`)
+      .addFields(
+        { name: 'Escalonado por', value: `${i.user}`, inline: true },
+        { name: 'Motivo', value: motivo },
+      )
       .setTimestamp();
-    if (motivo) embed.addFields({ name: 'Motivo', value: motivo });
 
     await ch.send({
-      content: `<@&${cfg.cargoAdm}>`,
+      content: `<@&${cfg.cargoAdm}> este ticket foi escalonado para a administração.`,
       embeds: [embed],
       allowedMentions: { roles: [cfg.cargoAdm] },
     });
