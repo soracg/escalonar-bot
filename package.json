@@ -1,0 +1,16 @@
+{
+  "name": "escalonar-bot",
+  "version": "1.0.0",
+  "description": "Comando /escalonar: move tickets da categoria de atendimento para a de ADM",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": "22.x"
+  },
+  "dependencies": {
+    "discord.js": "^14.17.0",
+    "dotenv": "^16.4.5"
+  }
+}
