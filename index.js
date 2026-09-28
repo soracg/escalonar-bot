@@ -23,6 +23,7 @@ const cfg = {
   cargoAdm: env.CARGO_ADM_ID,
   cargosAtendimento: lista(env.CARGOS_ATENDIMENTO_IDS), // Recrutador, Moderador
   logChannel: env.LOG_CHANNEL_ID || null,
+  alertaChannel: env.ALERTA_CHANNEL_ID || null, // opcional: canal para alertas de cheater
   revogar: (env.REVOGAR_ACESSO_ATENDIMENTO ?? 'true') === 'true',
 };
 
@@ -34,7 +35,13 @@ for (const k of ['token', 'clientId', 'guildId', 'catAtendimento', 'catEscalonad
 }
 
 // ---------- Identidade visual ----------
-const COR = { escalonado: 0xf59e0b, devolvido: 0x22c55e, ok: 0x3b82f6, erro: 0xef4444 };
+const COR = {
+  escalonado: 0xf59e0b,
+  devolvido: 0x22c55e,
+  alerta: 0xdc2626,
+  ok: 0x3b82f6,
+  erro: 0xef4444,
+};
 const RODAPE = 'Caveiras • Sistema de Tickets';
 const citar = (texto) => `>>> ${texto}`;
 const EPH = MessageFlags.Ephemeral;
@@ -47,14 +54,14 @@ const autor = (i, prefixo) => ({
   iconURL: i.user.displayAvatarURL(),
 });
 
-async function registrar(guild, embed) {
-  if (!cfg.logChannel) return;
-  const canal = guild.channels.cache.get(cfg.logChannel);
-  await canal?.send({ embeds: [embed] }).catch((e) => console.error('Falha no log:', e.message));
+async function enviarEm(guild, canalId, payload) {
+  if (!canalId) return;
+  const canal = guild.channels.cache.get(canalId);
+  await canal?.send(payload).catch((e) => console.error('Falha ao enviar em canal auxiliar:', e.message));
 }
 
 // ---------- Comandos ----------
-const comando = new SlashCommandBuilder()
+const comandoEscalonar = new SlashCommandBuilder()
   .setName('escalonar')
   .setDescription('Escalona este ticket para a administração')
   .addStringOption((o) =>
@@ -63,6 +70,31 @@ const comando = new SlashCommandBuilder()
       .setDescription('Motivo do escalonamento')
       .setMaxLength(500)
       .setRequired(true),
+  )
+  .setDMPermission(false);
+
+const comandoCheater = new SlashCommandBuilder()
+  .setName('cheater')
+  .setDescription('Sinaliza suspeita de cheater e escalona o ticket com prioridade')
+  .addStringOption((o) =>
+    o
+      .setName('jogador')
+      .setDescription('Nick ou ID do jogador suspeito')
+      .setMaxLength(100)
+      .setRequired(true),
+  )
+  .addStringOption((o) =>
+    o
+      .setName('motivo')
+      .setDescription('O que motivou a suspeita')
+      .setMaxLength(500)
+      .setRequired(true),
+  )
+  .addStringOption((o) =>
+    o
+      .setName('evidencia')
+      .setDescription('Link de vídeo/print ou descrição da prova, se houver')
+      .setMaxLength(300),
   )
   .setDMPermission(false);
 
@@ -83,22 +115,28 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 client.once(Events.ClientReady, async (c) => {
   const rest = new REST().setToken(cfg.token);
   await rest.put(Routes.applicationGuildCommands(cfg.clientId, cfg.guildId), {
-    body: [comando.toJSON(), comandoDevolver.toJSON()],
+    body: [comandoEscalonar.toJSON(), comandoCheater.toJSON(), comandoDevolver.toJSON()],
   });
-  console.log(`Online como ${c.user.tag} — /escalonar e /devolver registrados.`);
+  console.log(`Online como ${c.user.tag} — /escalonar, /cheater e /devolver registrados.`);
 });
 
-// ---------- /escalonar ----------
-client.on(Events.InteractionCreate, async (i) => {
-  if (!i.isChatInputCommand() || i.commandName !== 'escalonar') return;
-
+// ---------- Escalonamento (usado por /escalonar e /cheater) ----------
+async function escalar(i, { tipo, motivo, jogador, evidencia }) {
+  const alerta = tipo === 'cheater';
   const negar = (descricao, titulo = 'Não foi possível concluir') =>
     i.reply({ embeds: [aviso(COR.erro, titulo, descricao)], flags: EPH });
   const ch = i.channel;
 
-  // 1) Precisa ser um ticket na categoria de atendimento
-  if (ch?.type !== ChannelType.GuildText || ch.parentId !== cfg.catAtendimento) {
-    return negar('Este comando só funciona dentro de um ticket da categoria de atendimento.');
+  const noAtendimento = ch?.parentId === cfg.catAtendimento;
+  const jaEscalado = ch?.parentId === cfg.catEscalonado;
+
+  // 1) Precisa ser um ticket (o /cheater também vale em ticket já escalonado)
+  if (ch?.type !== ChannelType.GuildText || !(noAtendimento || (alerta && jaEscalado))) {
+    return negar(
+      alerta
+        ? 'Este comando só funciona dentro de um ticket.'
+        : 'Este comando só funciona dentro de um ticket da categoria de atendimento.',
+    );
   }
 
   // 2) Só Recrutador/Moderador/ADM
@@ -110,85 +148,150 @@ client.on(Events.InteractionCreate, async (i) => {
     console.log(
       `[perm] negado para ${i.user.tag} | cargos do usuário: ${[...i.member.roles.cache.keys()].join(',')} | permitidos: ${permitidos.join(',')}`,
     );
-    return negar('Você não tem permissão para escalonar tickets.', 'Acesso negado');
+    return negar('Você não tem permissão para usar este comando.', 'Acesso negado');
   }
 
-  // 3) Categoria de destino
+  // 3) Categoria de destino (só quando o ticket ainda está no atendimento)
   await i.guild.channels.fetch();
-  const destino = i.guild.channels.cache.get(cfg.catEscalonado);
-  if (!destino || destino.type !== ChannelType.GuildCategory) {
-    return negar('Categoria de escalonados não encontrada. Avise um ADM.');
-  }
-  if (destino.children.cache.size >= 50) {
-    return negar('A categoria de escalonados está cheia (limite de 50 canais do Discord).');
+  let destino = null;
+  if (noAtendimento) {
+    destino = i.guild.channels.cache.get(cfg.catEscalonado);
+    if (!destino || destino.type !== ChannelType.GuildCategory) {
+      return negar('Categoria de escalonados não encontrada. Avise um ADM.');
+    }
+    if (destino.children.cache.size >= 50) {
+      return negar('A categoria de escalonados está cheia (limite de 50 canais do Discord).');
+    }
   }
 
   await i.deferReply({ flags: EPH });
-  const motivo = i.options.getString('motivo', true);
 
   try {
-    // Move sem sincronizar (preserva o acesso de quem abriu o ticket)
-    await ch.setParent(destino, {
-      lockPermissions: false,
-      reason: `Escalonado por ${i.user.tag}`,
-    });
+    if (noAtendimento) {
+      // Move sem sincronizar (preserva o acesso de quem abriu o ticket)
+      await ch.setParent(destino, {
+        lockPermissions: false,
+        reason: `${alerta ? 'Suspeita de cheater' : 'Escalonado'} por ${i.user.tag}`,
+      });
 
-    // ADM passa a ver e responder
-    await ch.permissionOverwrites.edit(cfg.cargoAdm, {
-      ViewChannel: true,
-      SendMessages: true,
-      ReadMessageHistory: true,
-      AttachFiles: true,
-    });
+      // ADM passa a ver e responder
+      await ch.permissionOverwrites.edit(cfg.cargoAdm, {
+        ViewChannel: true,
+        SendMessages: true,
+        ReadMessageHistory: true,
+        AttachFiles: true,
+      });
 
-    // Atendimento perde acesso (se REVOGAR_ACESSO_ATENDIMENTO=true)
-    if (cfg.revogar) {
-      for (const id of cfg.cargosAtendimento) {
-        await ch.permissionOverwrites.edit(id, { ViewChannel: false });
+      // Atendimento perde acesso (se REVOGAR_ACESSO_ATENDIMENTO=true)
+      if (cfg.revogar) {
+        for (const id of cfg.cargosAtendimento) {
+          await ch.permissionOverwrites.edit(id, { ViewChannel: false });
+        }
       }
     }
 
-    const embed = new EmbedBuilder()
-      .setColor(COR.escalonado)
-      .setAuthor(autor(i, 'Escalonado por'))
-      .setTitle('Ticket escalonado')
-      .setDescription('Este atendimento foi encaminhado à administração para análise.')
-      .addFields(
-        { name: 'Motivo', value: citar(motivo) },
-        { name: 'Status', value: 'Aguardando administração', inline: true },
-      )
-      .setFooter({ text: RODAPE })
-      .setTimestamp();
+    // ---- Mensagem no ticket ----
+    let embed;
+    let conteudo;
+    if (alerta) {
+      embed = new EmbedBuilder()
+        .setColor(COR.alerta)
+        .setAuthor(autor(i, 'Sinalizado por'))
+        .setTitle('🚨 Suspeita de cheater')
+        .setDescription(
+          'Suspeita de cheater sinalizada neste ticket. Requer atenção prioritária da administração.',
+        )
+        .addFields(
+          { name: 'Jogador suspeito', value: `**${jogador}**`, inline: true },
+          { name: 'Prioridade', value: 'Alta', inline: true },
+          { name: 'Status', value: 'Suspeita — aguardando verificação', inline: true },
+          { name: 'Motivo da suspeita', value: citar(motivo) },
+        )
+        .setFooter({ text: RODAPE })
+        .setTimestamp();
+      if (evidencia) embed.addFields({ name: 'Evidências', value: evidencia });
+      conteudo = `<@&${cfg.cargoAdm}> 🚨 **ALERTA:** suspeita de cheater sinalizada neste ticket.`;
+    } else {
+      embed = new EmbedBuilder()
+        .setColor(COR.escalonado)
+        .setAuthor(autor(i, 'Escalonado por'))
+        .setTitle('Ticket escalonado')
+        .setDescription('Este atendimento foi encaminhado à administração para análise.')
+        .addFields(
+          { name: 'Motivo', value: citar(motivo) },
+          { name: 'Status', value: 'Aguardando administração', inline: true },
+        )
+        .setFooter({ text: RODAPE })
+        .setTimestamp();
+      conteudo = `<@&${cfg.cargoAdm}> novo ticket escalonado aguardando análise.`;
+    }
 
     await ch.send({
-      content: `<@&${cfg.cargoAdm}> novo ticket escalonado aguardando análise.`,
+      content: conteudo,
       embeds: [embed],
       allowedMentions: { roles: [cfg.cargoAdm] },
     });
 
-    await registrar(
-      i.guild,
-      new EmbedBuilder()
-        .setColor(COR.escalonado)
-        .setTitle('Registro • Escalonamento')
-        .addFields(
-          { name: 'Ticket', value: `${ch}\n\`#${ch.name}\``, inline: true },
-          { name: 'Responsável', value: `${i.user}`, inline: true },
-          { name: 'Motivo', value: citar(motivo) },
-        )
-        .setFooter({ text: RODAPE })
-        .setTimestamp(),
-    );
+    // ---- Alerta no canal dedicado (só /cheater, se configurado) ----
+    if (alerta && cfg.alertaChannel) {
+      await enviarEm(i.guild, cfg.alertaChannel, {
+        content: `<@&${cfg.cargoAdm}> 🚨 suspeita de cheater — ticket: ${ch}`,
+        embeds: [EmbedBuilder.from(embed).addFields({ name: 'Ticket', value: `${ch}`, inline: true })],
+        allowedMentions: { roles: [cfg.cargoAdm] },
+      });
+    }
+
+    // ---- Registro ----
+    const log = new EmbedBuilder()
+      .setColor(alerta ? COR.alerta : COR.escalonado)
+      .setTitle(alerta ? 'Registro • Suspeita de cheater' : 'Registro • Escalonamento')
+      .addFields(
+        { name: 'Ticket', value: `${ch}\n\`#${ch.name}\``, inline: true },
+        { name: 'Responsável', value: `${i.user}`, inline: true },
+      )
+      .setFooter({ text: RODAPE })
+      .setTimestamp();
+    if (alerta) log.addFields({ name: 'Jogador suspeito', value: jogador, inline: true });
+    log.addFields({ name: 'Motivo', value: citar(motivo) });
+    if (alerta && evidencia) log.addFields({ name: 'Evidências', value: evidencia });
+    await enviarEm(i.guild, cfg.logChannel, { embeds: [log] });
 
     await i.editReply({
-      embeds: [aviso(COR.ok, 'Ticket escalonado', 'O ticket foi encaminhado à administração.')],
+      embeds: [
+        aviso(
+          COR.ok,
+          alerta ? 'Alerta enviado' : 'Ticket escalonado',
+          alerta
+            ? 'A administração foi notificada sobre a suspeita de cheater.'
+            : 'O ticket foi encaminhado à administração.',
+        ),
+      ],
     });
   } catch (err) {
-    console.error('Erro ao escalonar:', err);
+    console.error(`Erro ao ${alerta ? 'sinalizar cheater' : 'escalonar'}:`, err);
     await i.editReply({
       embeds: [
-        aviso(COR.erro, 'Falha ao escalonar', 'Verifique as permissões do bot nas duas categorias.'),
+        aviso(
+          COR.erro,
+          alerta ? 'Falha ao sinalizar' : 'Falha ao escalonar',
+          'Verifique as permissões do bot nas duas categorias.',
+        ),
       ],
+    });
+  }
+}
+
+client.on(Events.InteractionCreate, async (i) => {
+  if (!i.isChatInputCommand()) return;
+  if (i.commandName === 'escalonar') {
+    return escalar(i, { tipo: 'escalonar', motivo: i.options.getString('motivo', true) });
+  }
+  if (i.commandName === 'cheater') {
+    return escalar(i, {
+      tipo: 'cheater',
+      jogador: i.options.getString('jogador', true),
+      motivo: i.options.getString('motivo', true),
+      evidencia: i.options.getString('evidencia'),
     });
   }
 });
@@ -258,19 +361,20 @@ client.on(Events.InteractionCreate, async (i) => {
       allowedMentions: { roles: cfg.cargosAtendimento },
     });
 
-    await registrar(
-      i.guild,
-      new EmbedBuilder()
-        .setColor(COR.devolvido)
-        .setTitle('Registro • Devolução')
-        .addFields(
-          { name: 'Ticket', value: `${ch}\n\`#${ch.name}\``, inline: true },
-          { name: 'Responsável', value: `${i.user}`, inline: true },
-          { name: 'Motivo', value: citar(motivo) },
-        )
-        .setFooter({ text: RODAPE })
-        .setTimestamp(),
-    );
+    await enviarEm(i.guild, cfg.logChannel, {
+      embeds: [
+        new EmbedBuilder()
+          .setColor(COR.devolvido)
+          .setTitle('Registro • Devolução')
+          .addFields(
+            { name: 'Ticket', value: `${ch}\n\`#${ch.name}\``, inline: true },
+            { name: 'Responsável', value: `${i.user}`, inline: true },
+            { name: 'Motivo', value: citar(motivo) },
+          )
+          .setFooter({ text: RODAPE })
+          .setTimestamp(),
+      ],
+    });
 
     await i.editReply({
       embeds: [aviso(COR.ok, 'Ticket devolvido', 'O ticket voltou para a categoria de atendimento.')],
