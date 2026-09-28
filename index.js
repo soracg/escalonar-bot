@@ -15,7 +15,7 @@ const env = process.env;
 const lista = (v = '') => v.split(',').map((s) => s.trim()).filter(Boolean);
 
 const cfg = {
-  token: env.DISCORD_TOKEN,
+  token: (env.DISCORD_TOKEN || '').trim().replace(/^["']|["']$/g, ''),
   clientId: env.CLIENT_ID,
   guildId: env.GUILD_ID,
   catAtendimento: env.CATEGORIA_ATENDIMENTO_ID,
@@ -156,6 +156,21 @@ client.on(Events.ShardError, (e) => console.error('shard error:', e));
 client.on(Events.Warn, (m) => console.warn('warn:', m));
 if (process.env.DEBUG_DISCORD === 'true') client.on(Events.Debug, (m) => console.log('[debug]', m));
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
+
+console.log(`[diag] token com ${cfg.token.length} caracteres`);
+(async () => {
+  try {
+    const r = await fetch('https://discord.com/api/v10/users/@me', {
+      headers: { Authorization: `Bot ${cfg.token}` },
+    });
+    const corpo = (await r.text()).replace(/\s+/g, ' ').slice(0, 150);
+    console.log(`[diag] Discord API respondeu ${r.status}: ${corpo}`);
+  } catch (e) {
+    console.error('[diag] não alcançou a API do Discord:', e.message);
+  }
+})();
+const pendente = setTimeout(() => console.warn('[diag] login ainda pendente após 30s'), 30000);
+client.once(Events.ClientReady, () => clearTimeout(pendente));
 
 console.log('Conectando ao Discord...');
 client.login(cfg.token).catch((e) => console.error('Falha no login:', e));
