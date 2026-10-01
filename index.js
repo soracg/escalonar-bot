@@ -72,8 +72,8 @@ const CARGOS_PAINEL = [
   { id: '1555235317550948434', label: '🪖 Eventos' },
   { id: '1555235262018228295', label: '🎮 Casual' },
   { id: '1555235062918680668', label: '🏆 Competitivo' },
-  { id: '1555231449907470506', label: 'Wardogs' },
-  { id: '1555231437651972201', label: 'Hell Let Loose' },
+  { id: '1555231449907470506', label: '🐶 Wardogs' },
+  { id: '1555231437651972201', label: '💣 Hell Let Loose' },
 ];
 const PREFIXO_BOTAO_CARGO = 'cargo:';
 
