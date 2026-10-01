@@ -9,6 +9,9 @@ const {
   ChannelType,
   EmbedBuilder,
   MessageFlags,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
 } = require('discord.js');
 
 const env = process.env;
@@ -63,6 +66,35 @@ async function enviarEm(guild, canalId, payload) {
   await canal?.send(payload).catch((e) => console.error('Falha ao enviar em canal auxiliar:', e.message));
 }
 
+// ---------- Cargos de autosserviço (botões) ----------
+const CARGOS_PAINEL = [
+  { id: '1555235580625944576', label: '🎖️ Premiações' },
+  { id: '1555235317550948434', label: '🪖 Eventos' },
+  { id: '1555235262018228295', label: '🎮 Casual' },
+  { id: '1555235062918680668', label: '🏆 Competitivo' },
+  { id: '1555231449907470506', label: 'Wardogs' },
+  { id: '1555231437651972201', label: 'Hell Let Loose' },
+];
+const PREFIXO_BOTAO_CARGO = 'cargo:';
+
+function linhasBotoesCargos() {
+  const linhas = [];
+  for (let j = 0; j < CARGOS_PAINEL.length; j += 5) {
+    const grupo = CARGOS_PAINEL.slice(j, j + 5);
+    linhas.push(
+      new ActionRowBuilder().addComponents(
+        grupo.map((c) =>
+          new ButtonBuilder()
+            .setCustomId(`${PREFIXO_BOTAO_CARGO}${c.id}`)
+            .setLabel(c.label)
+            .setStyle(ButtonStyle.Secondary),
+        ),
+      ),
+    );
+  }
+  return linhas;
+}
+
 // ---------- Comandos ----------
 const comandoEscalonar = new SlashCommandBuilder()
   .setName('escalonar')
@@ -113,6 +145,11 @@ const comandoDevolver = new SlashCommandBuilder()
   )
   .setDMPermission(false);
 
+const comandoCargosPainel = new SlashCommandBuilder()
+  .setName('cargos-painel')
+  .setDescription('Posta o painel de botões para os membros pegarem seus cargos (só ADM)')
+  .setDMPermission(false);
+
 const comandoAvisoArmadilha = new SlashCommandBuilder()
   .setName('aviso-armadilha')
   .setDescription('Posta e fixa o aviso explicando o canal-armadilha (só ADM)')
@@ -130,10 +167,11 @@ client.once(Events.ClientReady, async (c) => {
       comandoCheater.toJSON(),
       comandoDevolver.toJSON(),
       comandoAvisoArmadilha.toJSON(),
+      comandoCargosPainel.toJSON(),
     ],
   });
   console.log(
-    `Online como ${c.user.tag} — /escalonar, /cheater, /devolver e /aviso-armadilha registrados.`,
+    `Online como ${c.user.tag} — /escalonar, /cheater, /devolver, /aviso-armadilha e /cargos-painel registrados.`,
   );
 });
 
@@ -402,6 +440,68 @@ client.on(Events.InteractionCreate, async (i) => {
       embeds: [
         aviso(COR.erro, 'Falha ao devolver', 'Verifique as permissões do bot nas duas categorias.'),
       ],
+    });
+  }
+});
+
+// ---------- /cargos-painel ----------
+client.on(Events.InteractionCreate, async (i) => {
+  if (!i.isChatInputCommand() || i.commandName !== 'cargos-painel') return;
+
+  const negar = (descricao, titulo = 'Não foi possível concluir') =>
+    i.reply({ embeds: [aviso(COR.erro, titulo, descricao)], flags: EPH });
+
+  if (!i.member.permissions.has('Administrator') && !i.member.roles.cache.has(cfg.cargoAdm)) {
+    return negar('Só a administração pode usar este comando.', 'Acesso negado');
+  }
+
+  const embedPainel = new EmbedBuilder()
+    .setColor(COR.ok)
+    .setTitle('🎟️ Escolha seus cargos')
+    .setDescription(
+      'Clique nos botões abaixo para pegar ou remover um cargo. Use para liberar acesso aos canais e marcações de eventos, jogos e divisões.',
+    )
+    .addFields({
+      name: 'Cargos disponíveis',
+      value: CARGOS_PAINEL.map((c) => `• ${c.label}`).join('\n'),
+    })
+    .setFooter({ text: RODAPE })
+    .setTimestamp();
+
+  try {
+    await i.channel.send({ embeds: [embedPainel], components: linhasBotoesCargos() });
+    await i.reply({
+      embeds: [aviso(COR.ok, 'Painel publicado', 'O painel de cargos foi postado neste canal.')],
+      flags: EPH,
+    });
+  } catch (err) {
+    console.error('Erro ao postar painel de cargos:', err);
+    await negar('Verifique as permissões do bot neste canal.', 'Falha ao publicar');
+  }
+});
+
+// ---------- Botões de cargo ----------
+client.on(Events.InteractionCreate, async (i) => {
+  if (!i.isButton() || !i.customId.startsWith(PREFIXO_BOTAO_CARGO)) return;
+
+  const cargoId = i.customId.slice(PREFIXO_BOTAO_CARGO.length);
+  const cargo = CARGOS_PAINEL.find((c) => c.id === cargoId);
+  if (!cargo) return i.reply({ content: 'Cargo não reconhecido.', flags: EPH });
+
+  try {
+    const tem = i.member.roles.cache.has(cargoId);
+    if (tem) {
+      await i.member.roles.remove(cargoId, 'Autosserviço: botão de cargos');
+      await i.reply({ content: `➖ Cargo **${cargo.label}** removido.`, flags: EPH });
+    } else {
+      await i.member.roles.add(cargoId, 'Autosserviço: botão de cargos');
+      await i.reply({ content: `✅ Cargo **${cargo.label}** adicionado.`, flags: EPH });
+    }
+  } catch (err) {
+    console.error('Erro ao alternar cargo:', err);
+    await i.reply({
+      content: 'Não consegui alterar esse cargo. Avise um ADM (pode ser permissão do bot).',
+      flags: EPH,
     });
   }
 });
