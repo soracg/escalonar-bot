@@ -27,6 +27,7 @@ const cfg = {
   revogar: (env.REVOGAR_ACESSO_ATENDIMENTO ?? 'true') === 'true',
   canalCastigo: env.CANAL_CASTIGO_ID || null, // canal-armadilha (ex.: primeiro canal do servidor)
   castigoDias: Number(env.CASTIGO_DIAS ?? 7),
+  castigoAlertaChannel: env.CASTIGO_ALERTA_CHANNEL_ID || null, // canal de avisos de castigo (spam/invasão)
 };
 
 for (const k of ['token', 'clientId', 'guildId', 'catAtendimento', 'catEscalonado', 'cargoAdm']) {
@@ -418,7 +419,7 @@ if (cfg.canalCastigo) {
 
       console.log(`[castigo] ${msg.author.tag} (${msg.author.id}) mutado por ${cfg.castigoDias}d — canal-armadilha`);
 
-      await enviarEm(msg.guild, cfg.logChannel, {
+      await enviarEm(msg.guild, cfg.castigoAlertaChannel, {
         embeds: [
           new EmbedBuilder()
             .setColor(COR.alerta)
