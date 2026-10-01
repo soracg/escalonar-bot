@@ -113,6 +113,11 @@ const comandoDevolver = new SlashCommandBuilder()
   )
   .setDMPermission(false);
 
+const comandoAvisoArmadilha = new SlashCommandBuilder()
+  .setName('aviso-armadilha')
+  .setDescription('Posta e fixa o aviso explicando o canal-armadilha (só ADM)')
+  .setDMPermission(false);
+
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
 });
@@ -120,9 +125,16 @@ const client = new Client({
 client.once(Events.ClientReady, async (c) => {
   const rest = new REST().setToken(cfg.token);
   await rest.put(Routes.applicationGuildCommands(cfg.clientId, cfg.guildId), {
-    body: [comandoEscalonar.toJSON(), comandoCheater.toJSON(), comandoDevolver.toJSON()],
+    body: [
+      comandoEscalonar.toJSON(),
+      comandoCheater.toJSON(),
+      comandoDevolver.toJSON(),
+      comandoAvisoArmadilha.toJSON(),
+    ],
   });
-  console.log(`Online como ${c.user.tag} — /escalonar, /cheater e /devolver registrados.`);
+  console.log(
+    `Online como ${c.user.tag} — /escalonar, /cheater, /devolver e /aviso-armadilha registrados.`,
+  );
 });
 
 // ---------- Escalonamento (usado por /escalonar e /cheater) ----------
@@ -390,6 +402,58 @@ client.on(Events.InteractionCreate, async (i) => {
       embeds: [
         aviso(COR.erro, 'Falha ao devolver', 'Verifique as permissões do bot nas duas categorias.'),
       ],
+    });
+  }
+});
+
+// ---------- /aviso-armadilha ----------
+client.on(Events.InteractionCreate, async (i) => {
+  if (!i.isChatInputCommand() || i.commandName !== 'aviso-armadilha') return;
+
+  const negar = (descricao, titulo = 'Não foi possível concluir') =>
+    i.reply({ embeds: [aviso(COR.erro, titulo, descricao)], flags: EPH });
+
+  if (!i.member.permissions.has('Administrator') && !i.member.roles.cache.has(cfg.cargoAdm)) {
+    return negar('Só a administração pode usar este comando.', 'Acesso negado');
+  }
+  if (!cfg.canalCastigo) {
+    return negar('CANAL_CASTIGO_ID não está configurado. Avise um ADM.');
+  }
+  if (i.channelId !== cfg.canalCastigo) {
+    return negar('Use este comando dentro do canal-armadilha.');
+  }
+
+  await i.deferReply({ flags: EPH });
+
+  const embedAviso = new EmbedBuilder()
+    .setColor(COR.alerta)
+    .setTitle('⚠️ Não envie mensagens neste canal')
+    .setDescription(
+      'Este canal é monitorado e **não deve receber mensagens**. Ele existe para identificar contas comprometidas (hackeadas) que enviam links maliciosos no servidor.',
+    )
+    .addFields(
+      {
+        name: 'O que acontece se alguém postar aqui',
+        value: 'A mensagem é apagada automaticamente e o autor recebe castigo (timeout) imediato.',
+      },
+      {
+        name: 'Minha conta foi punida por engano?',
+        value: 'Se sua conta foi hackeada e postou aqui sem sua ação, procure a administração em um ticket assim que recuperar o acesso.',
+      },
+    )
+    .setFooter({ text: RODAPE })
+    .setTimestamp();
+
+  try {
+    const msg = await i.channel.send({ embeds: [embedAviso] });
+    await msg.pin().catch(() => {});
+    await i.editReply({
+      embeds: [aviso(COR.ok, 'Aviso publicado', 'O aviso foi postado e fixado no canal-armadilha.')],
+    });
+  } catch (err) {
+    console.error('Erro ao postar aviso da armadilha:', err);
+    await i.editReply({
+      embeds: [aviso(COR.erro, 'Falha ao publicar', 'Verifique as permissões do bot neste canal.')],
     });
   }
 });
