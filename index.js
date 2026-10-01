@@ -459,7 +459,7 @@ client.on(Events.InteractionCreate, async (i) => {
     .setColor(COR.ok)
     .setTitle('🎟️ Escolha seus cargos')
     .setDescription(
-      'Clique nos botões abaixo para pegar ou remover um cargo. Use para liberar acesso aos canais e marcações de eventos, jogos e divisões.',
+      'Clique nos botões abaixo para pegar ou remover um cargo. Use para liberar acesso aos canais e marcações de eventos e jogos. Caso alguma categoria tenha sumido, clique no botão respectivo para voltar a ter visão do canal.',
     )
     .addFields({
       name: 'Cargos disponíveis',
