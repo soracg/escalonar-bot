@@ -25,6 +25,8 @@ const cfg = {
   logChannel: env.LOG_CHANNEL_ID || null,
   alertaChannel: env.ALERTA_CHANNEL_ID || null, // opcional: canal para alertas de cheater
   revogar: (env.REVOGAR_ACESSO_ATENDIMENTO ?? 'true') === 'true',
+  canalCastigo: env.CANAL_CASTIGO_ID || null, // canal-armadilha (ex.: primeiro canal do servidor)
+  castigoDias: Number(env.CASTIGO_DIAS ?? 7),
 };
 
 for (const k of ['token', 'clientId', 'guildId', 'catAtendimento', 'catEscalonado', 'cargoAdm']) {
@@ -110,7 +112,9 @@ const comandoDevolver = new SlashCommandBuilder()
   )
   .setDMPermission(false);
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
+});
 
 client.once(Events.ClientReady, async (c) => {
   const rest = new REST().setToken(cfg.token);
@@ -388,6 +392,53 @@ client.on(Events.InteractionCreate, async (i) => {
     });
   }
 });
+
+// ---------- Canal-armadilha (contas hackeadas postando links) ----------
+if (cfg.canalCastigo) {
+  const MS_DIA = 24 * 60 * 60 * 1000;
+  const MAX_TIMEOUT = 28 * MS_DIA; // limite do Discord
+  const duracao = Math.min(cfg.castigoDias * MS_DIA, MAX_TIMEOUT);
+
+  client.on(Events.MessageCreate, async (msg) => {
+    if (!msg.guild || msg.channelId !== cfg.canalCastigo) return;
+    if (msg.author.bot) return;
+
+    const membro = msg.member ?? (await msg.guild.members.fetch(msg.author.id).catch(() => null));
+    if (!membro) return;
+
+    // Isenta ADM — mensagem legítima da administração não deve ser punida
+    if (membro.permissions.has('Administrator') || membro.roles.cache.has(cfg.cargoAdm)) return;
+
+    try {
+      await msg.delete().catch(() => {});
+      await membro.timeout(
+        duracao,
+        `Mensagem em canal-armadilha (possível conta comprometida) — ${cfg.castigoDias}d`,
+      );
+
+      console.log(`[castigo] ${msg.author.tag} (${msg.author.id}) mutado por ${cfg.castigoDias}d — canal-armadilha`);
+
+      await enviarEm(msg.guild, cfg.logChannel, {
+        embeds: [
+          new EmbedBuilder()
+            .setColor(COR.alerta)
+            .setTitle('🚨 Registro • Canal-armadilha')
+            .setDescription(
+              'Mensagem detectada no canal-armadilha. Possível conta comprometida enviando links maliciosos.',
+            )
+            .addFields(
+              { name: 'Usuário', value: `${msg.author} (\`${msg.author.id}\`)`, inline: true },
+              { name: 'Castigo aplicado', value: `${cfg.castigoDias} dia(s)`, inline: true },
+            )
+            .setFooter({ text: RODAPE })
+            .setTimestamp(),
+        ],
+      });
+    } catch (err) {
+      console.error('Erro ao aplicar castigo no canal-armadilha:', err.message);
+    }
+  });
+}
 
 // Servidor HTTP mínimo: só sobe onde há PORT definida (ex.: Web Service do Render)
 if (process.env.PORT) {
