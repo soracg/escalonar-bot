@@ -420,6 +420,7 @@ if (cfg.canalCastigo) {
       console.log(`[castigo] ${msg.author.tag} (${msg.author.id}) mutado por ${cfg.castigoDias}d — canal-armadilha`);
 
       await enviarEm(msg.guild, cfg.castigoAlertaChannel, {
+        content: `<@&${cfg.cargoAdm}> 🚨 possível conta comprometida detectada no canal-armadilha.`,
         embeds: [
           new EmbedBuilder()
             .setColor(COR.alerta)
@@ -434,6 +435,7 @@ if (cfg.canalCastigo) {
             .setFooter({ text: RODAPE })
             .setTimestamp(),
         ],
+        allowedMentions: { roles: [cfg.cargoAdm] },
       });
     } catch (err) {
       console.error('Erro ao aplicar castigo no canal-armadilha:', err.message);
