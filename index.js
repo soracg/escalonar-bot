@@ -166,6 +166,11 @@ const comandoSorteioEncerrar = new SlashCommandBuilder()
   .setDescription('Encerra o sorteio ativo agora e sorteia o ganhador (só ADM)')
   .setDMPermission(false);
 
+const comandoSorteioStatus = new SlashCommandBuilder()
+  .setName('sorteio-status')
+  .setDescription('Mostra quem está participando do sorteio ativo (só ADM)')
+  .setDMPermission(false);
+
 // ---------- Persistência simples do sorteio (sobrevive a reinícios) ----------
 const DADOS_SORTEIO = path.join(__dirname, 'data', 'sorteio.json');
 const PREFIXO_BOTAO_SORTEIO = 'sorteio_participar';
@@ -274,10 +279,11 @@ client.once(Events.ClientReady, async (c) => {
       comandoCargosPainel.toJSON(),
       comandoSorteioKabum.toJSON(),
       comandoSorteioEncerrar.toJSON(),
+      comandoSorteioStatus.toJSON(),
     ],
   });
   console.log(
-    `Online como ${c.user.tag} — comandos registrados (escalonar, cheater, devolver, aviso-armadilha, cargos-painel, sorteiovipkabum, sorteio-encerrar).`,
+    `Online como ${c.user.tag} — comandos registrados (escalonar, cheater, devolver, aviso-armadilha, cargos-painel, sorteiovipkabum, sorteio-encerrar, sorteio-status).`,
   );
 
   // Ao iniciar: se já havia um sorteio salvo e o prazo passou enquanto o bot estava offline, sorteia agora.
@@ -659,8 +665,51 @@ client.on(Events.InteractionCreate, async (i) => {
   sorteio.participantes.push(i.user.id);
   salvarSorteio(sorteio);
 
+  console.log(
+    `[sorteio] +1 participante: ${i.user.tag} (${i.user.id}) — total agora: ${sorteio.participantes.length}`,
+  );
+
   await i.reply({
     content: `✅ Você está participando do **Sorteio VIP Kabum**! Boa sorte 🍀 (${sorteio.participantes.length} participante(s) até agora)`,
+    flags: EPH,
+  });
+});
+
+// ---------- /sorteio-status ----------
+client.on(Events.InteractionCreate, async (i) => {
+  if (!i.isChatInputCommand() || i.commandName !== 'sorteio-status') return;
+
+  const negar = (descricao, titulo = 'Não foi possível concluir') =>
+    i.reply({ embeds: [aviso(COR.erro, titulo, descricao)], flags: EPH });
+
+  if (!i.member.permissions.has('Administrator') && !i.member.roles.cache.has(cfg.cargoAdm)) {
+    return negar('Só a administração pode usar este comando.', 'Acesso negado');
+  }
+  if (!sorteio) {
+    return negar('Nenhum sorteio foi iniciado ainda.');
+  }
+
+  const lista =
+    sorteio.participantes.length > 0
+      ? sorteio.participantes.map((id, idx) => `${idx + 1}. <@${id}> (\`${id}\`)`).join('\n')
+      : '_Ninguém participou ainda._';
+
+  const tsSegundos = Math.floor(sorteio.encerraEm / 1000);
+
+  await i.reply({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(COR.sorteio)
+        .setTitle('🎟️ Status do sorteio')
+        .addFields(
+          { name: 'Status', value: sorteio.sorteado ? 'Encerrado' : 'Em andamento', inline: true },
+          { name: 'Total de participantes', value: `${sorteio.participantes.length}`, inline: true },
+          { name: 'Encerramento', value: `<t:${tsSegundos}:F> (<t:${tsSegundos}:R>)` },
+          { name: 'Participantes', value: lista.slice(0, 1024) },
+        )
+        .setFooter({ text: RODAPE })
+        .setTimestamp(),
+    ],
     flags: EPH,
   });
 });
