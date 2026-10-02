@@ -175,6 +175,16 @@ const comandoSorteioStatus = new SlashCommandBuilder()
 const DADOS_SORTEIO = path.join(__dirname, 'data', 'sorteio.json');
 const PREFIXO_BOTAO_SORTEIO = 'sorteio_participar';
 
+// Cargos autorizados a participar do sorteio
+const CARGOS_PODEM_PARTICIPAR = [
+  '1400511336437514452', // Membro Efetivo
+  '1401000578372604028', // Recruta
+  '1404521279775834184', // Moderador
+  '409442142667145247', // ADM (confira este ID)
+  '1401534428416708779', // Recrutador
+  '1419044618711994510', // Dev
+];
+
 function carregarSorteio() {
   try {
     return JSON.parse(fs.readFileSync(DADOS_SORTEIO, 'utf8'));
@@ -651,6 +661,18 @@ client.on(Events.InteractionCreate, async (i) => {
 // ---------- Botão "Participar" do sorteio ----------
 client.on(Events.InteractionCreate, async (i) => {
   if (!i.isButton() || i.customId !== PREFIXO_BOTAO_SORTEIO) return;
+
+  // Trava: só quem tem um dos cargos liberados pode participar
+  const podeParticipar =
+    i.member?.roles?.cache?.some(
+      (r) => CARGOS_PODEM_PARTICIPAR.includes(r.id) || r.id === cfg.cargoAdm,
+    ) ?? false;
+  if (!podeParticipar) {
+    return i.reply({
+      content: '🚫 Só membros com cargo liberado (Membro Efetivo, Recruta, Moderador, ADM, Recrutador ou Dev) podem participar deste sorteio.',
+      flags: EPH,
+    });
+  }
 
   if (!sorteio || sorteio.sorteado) {
     return i.reply({ content: 'Não há nenhum sorteio ativo no momento.', flags: EPH });
