@@ -34,6 +34,7 @@ const cfg = {
   canalCastigo: env.CANAL_CASTIGO_ID || null, // canal-armadilha (ex.: primeiro canal do servidor)
   castigoDias: Number(env.CASTIGO_DIAS ?? 7),
   castigoAlertaChannel: env.CASTIGO_ALERTA_CHANNEL_ID || null, // canal de avisos de castigo (spam/invasão)
+  backupChannel: env.BACKUP_CHANNEL_ID || env.LOG_CHANNEL_ID || null, // canal (privado) onde o bot guarda o backup do sorteio
 };
 
 for (const k of ['token', 'clientId', 'guildId', 'catAtendimento', 'catEscalonado', 'cargoAdm']) {
@@ -199,8 +200,128 @@ function salvarSorteio(s) {
   } catch (e) {
     console.error('Falha ao salvar dados do sorteio:', e.message);
   }
+  agendarBackup();
 }
 let sorteio = carregarSorteio(); // { messageId, channelId, participantes: [], encerraEm, sorteado }
+
+// ---------- Backup do sorteio em um canal do Discord ----------
+// O disco do Render (plano gratuito) é apagado a cada deploy/reinício. Por isso o estado do sorteio
+// também é guardado como arquivo JSON em um canal e restaurado quando o bot sobe.
+const NOME_BACKUP = 'sorteio-backup.json';
+let clientBackup = null;
+let backupTimer = null;
+let backupMsgId = null;
+let filaBackup = Promise.resolve();
+
+function agendarBackup() {
+  if (!clientBackup || !cfg.backupChannel || backupTimer) return;
+  // Junta várias participações seguidas em um único backup (evita rate limit)
+  backupTimer = setTimeout(() => {
+    backupTimer = null;
+    filaBackup = filaBackup.then(enviarBackup).catch(() => {});
+  }, 5000);
+}
+
+async function enviarBackup() {
+  if (!sorteio || !clientBackup || !cfg.backupChannel) return;
+  try {
+    const canal = await clientBackup.channels.fetch(cfg.backupChannel);
+    const anteriorId = backupMsgId;
+    const msg = await canal.send({
+      content: `💾 Backup automático do sorteio — ${sorteio.participantes.length} participante(s). Não apague esta mensagem.`,
+      files: [new AttachmentBuilder(Buffer.from(JSON.stringify(sorteio, null, 2)), { name: NOME_BACKUP })],
+      allowedMentions: { parse: [] },
+    });
+    backupMsgId = msg.id;
+    if (anteriorId) await canal.messages.delete(anteriorId).catch(() => {});
+  } catch (e) {
+    console.error('[backup] falha ao enviar backup do sorteio:', e.message);
+  }
+}
+
+function gravarSorteioLocal(s) {
+  try {
+    fs.mkdirSync(path.dirname(DADOS_SORTEIO), { recursive: true });
+    fs.writeFileSync(DADOS_SORTEIO, JSON.stringify(s, null, 2));
+  } catch (e) {
+    console.error('Falha ao salvar dados do sorteio:', e.message);
+  }
+}
+
+async function restaurarBackup(client) {
+  if (!cfg.backupChannel) {
+    console.warn('[backup] BACKUP_CHANNEL_ID não definido: o sorteio NÃO sobreviverá a reinícios no Render.');
+    return;
+  }
+  try {
+    const canal = await client.channels.fetch(cfg.backupChannel);
+    const msgs = await canal.messages.fetch({ limit: 100 });
+    const alvo = [...msgs.values()]
+      .filter((m) => m.author.id === client.user.id && m.attachments.some((a) => a.name === NOME_BACKUP))
+      .sort((a, b) => b.createdTimestamp - a.createdTimestamp)[0];
+
+    if (!alvo) {
+      console.log('[backup] nenhum backup de sorteio encontrado no canal.');
+      return;
+    }
+    backupMsgId = alvo.id;
+
+    const anexo = alvo.attachments.find((a) => a.name === NOME_BACKUP);
+    const resp = await fetch(anexo.url);
+    const salvo = await resp.json();
+    if (!salvo || !Array.isArray(salvo.participantes)) throw new Error('backup inválido');
+
+    if (!sorteio) {
+      sorteio = salvo;
+      gravarSorteioLocal(sorteio);
+      console.log(`[backup] sorteio restaurado: ${sorteio.participantes.length} participante(s).`);
+    } else if (sorteio.messageId === salvo.messageId) {
+      // Mesmo sorteio: junta o que houver nos dois lados
+      sorteio.participantes = [...new Set([...sorteio.participantes, ...salvo.participantes])];
+      sorteio.sorteado = Boolean(sorteio.sorteado || salvo.sorteado);
+      gravarSorteioLocal(sorteio);
+      console.log(`[backup] estado local conferido com o backup: ${sorteio.participantes.length} participante(s).`);
+    }
+  } catch (e) {
+    console.error('[backup] falha ao restaurar:', e.message);
+  }
+}
+
+// Sementes manuais (uso único): só vale se não existir sorteio local nem backup.
+function aplicarSementeSorteio() {
+  if (sorteio || !env.SORTEIO_SEED) return;
+  try {
+    const seed = JSON.parse(env.SORTEIO_SEED);
+    if (!seed || !Array.isArray(seed.participantes) || !seed.messageId || !seed.channelId || !seed.encerraEm) {
+      throw new Error('faltam campos (messageId, channelId, participantes, encerraEm)');
+    }
+    sorteio = {
+      messageId: String(seed.messageId),
+      channelId: String(seed.channelId),
+      participantes: [...new Set(seed.participantes.map(String))],
+      encerraEm: Number(seed.encerraEm),
+      sorteado: Boolean(seed.sorteado),
+    };
+    salvarSorteio(sorteio);
+    console.log(`[backup] sorteio criado a partir de SORTEIO_SEED: ${sorteio.participantes.length} participante(s). Pode apagar essa variável.`);
+  } catch (e) {
+    console.error('[backup] SORTEIO_SEED inválido:', e.message);
+  }
+}
+
+// Ao desligar (deploy/reinício no Render), envia o backup pendente antes de sair
+async function finalizar() {
+  setTimeout(() => process.exit(0), 10000).unref();
+  if (backupTimer) {
+    clearTimeout(backupTimer);
+    backupTimer = null;
+    filaBackup = filaBackup.then(enviarBackup).catch(() => {});
+  }
+  await filaBackup;
+  process.exit(0);
+}
+process.on('SIGTERM', finalizar);
+process.on('SIGINT', finalizar);
 
 function linhaBotaoSorteio(desativado = false) {
   return new ActionRowBuilder().addComponents(
@@ -279,6 +400,10 @@ const client = new Client({
 });
 
 client.once(Events.ClientReady, async (c) => {
+  clientBackup = c;
+  await restaurarBackup(c);
+  aplicarSementeSorteio();
+
   const rest = new REST().setToken(cfg.token);
   await rest.put(Routes.applicationGuildCommands(cfg.clientId, cfg.guildId), {
     body: [
@@ -603,12 +728,12 @@ client.on(Events.InteractionCreate, async (i) => {
     .setTitle('🎉 SORTEIO VIP • R$500 EM VALE-PRESENTE KABUM! 🎉')
     .setDescription(
       '**Chegou a sua chance de turbinar o setup de graça!**\n\n' +
-        'A Caveiras está sorteando **R$500,00 em vale-presente da Kabum** para um membro do nosso clã ' +
-        'Pode ser aquele periférico novo, upgrade na máquina ou o que você quiser o prêmio é todo seu e quem escolhe é você!',
+        'A Caveiras está sorteando **R$500,00 em vale-presente da Kabum** para um membro da nossa comunidade. ' +
+        'Pode ser aquele periférico novo, upgrade na máquina ou o que você quiser — o prêmio é todo seu!',
     )
     .addFields(
       { name: '💰 Prêmio', value: 'R$500,00 em vale-presente Kabum', inline: true },
-      { name: '🍀 Quem pode participar', value: 'Todos os membros dos Caveiras', inline: true },
+      { name: '🍀 Quem pode participar', value: 'Membros da Caveiras com cargo liberado', inline: true },
       {
         name: '📋 Como participar',
         value: citar('Clique no botão **🎟️ Participar** abaixo. É só isso!'),
