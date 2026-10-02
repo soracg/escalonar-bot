@@ -12,7 +12,9 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  AttachmentBuilder,
 } = require('discord.js');
+const path = require('path');
 
 const env = process.env;
 const lista = (v = '') => v.split(',').map((s) => s.trim()).filter(Boolean);
@@ -481,14 +483,19 @@ client.on(Events.InteractionCreate, async (i) => {
       },
       { name: '🔥 Dica', value: 'Convide seus amigos para o servidor — quanto mais gente, mais animado fica!' },
     )
-    .setImage('https://i.imgur.com/NbX6V0F.jpeg')
+    .setImage('attachment://sorteio-kabum.jpeg')
     .setFooter({ text: RODAPE })
     .setTimestamp();
 
   try {
+    const imagem = new AttachmentBuilder(
+      path.join(__dirname, 'assets', 'sorteio-kabum.jpeg'),
+      { name: 'sorteio-kabum.jpeg' },
+    );
     await i.channel.send({
       content: '@everyone 🎉 **SORTEIO VIP KABUM** está no ar! Não fique de fora! 🎉',
       embeds: [embedSorteio],
+      files: [imagem],
       allowedMentions: { parse: ['everyone'] },
     });
     await i.reply({
