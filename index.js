@@ -15,6 +15,7 @@ const {
   AttachmentBuilder,
 } = require('discord.js');
 const path = require('path');
+const fs = require('fs');
 
 const env = process.env;
 const lista = (v = '') => v.split(',').map((s) => s.trim()).filter(Boolean);
@@ -151,7 +152,102 @@ const comandoDevolver = new SlashCommandBuilder()
 const comandoSorteioKabum = new SlashCommandBuilder()
   .setName('sorteiovipkabum')
   .setDescription('Anuncia o sorteio de R$500 em vale-presente da Kabum (só ADM)')
+  .addIntegerOption((o) =>
+    o
+      .setName('dias')
+      .setDescription('Duração do sorteio em dias (padrão: 3)')
+      .setMinValue(1)
+      .setMaxValue(30),
+  )
   .setDMPermission(false);
+
+const comandoSorteioEncerrar = new SlashCommandBuilder()
+  .setName('sorteio-encerrar')
+  .setDescription('Encerra o sorteio ativo agora e sorteia o ganhador (só ADM)')
+  .setDMPermission(false);
+
+// ---------- Persistência simples do sorteio (sobrevive a reinícios) ----------
+const DADOS_SORTEIO = path.join(__dirname, 'data', 'sorteio.json');
+const PREFIXO_BOTAO_SORTEIO = 'sorteio_participar';
+
+function carregarSorteio() {
+  try {
+    return JSON.parse(fs.readFileSync(DADOS_SORTEIO, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+function salvarSorteio(s) {
+  try {
+    fs.mkdirSync(path.dirname(DADOS_SORTEIO), { recursive: true });
+    fs.writeFileSync(DADOS_SORTEIO, JSON.stringify(s, null, 2));
+  } catch (e) {
+    console.error('Falha ao salvar dados do sorteio:', e.message);
+  }
+}
+let sorteio = carregarSorteio(); // { messageId, channelId, participantes: [], encerraEm, sorteado }
+
+function linhaBotaoSorteio(desativado = false) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(PREFIXO_BOTAO_SORTEIO)
+      .setLabel('Participar')
+      .setEmoji('🎟️')
+      .setStyle(ButtonStyle.Success)
+      .setDisabled(desativado),
+  );
+}
+
+async function sortearGanhador(client) {
+  if (!sorteio || sorteio.sorteado) return;
+  sorteio.sorteado = true;
+  salvarSorteio(sorteio);
+
+  try {
+    const canal = await client.channels.fetch(sorteio.channelId).catch(() => null);
+    if (!canal) return;
+
+    // Desativa o botão na mensagem original
+    const msgOriginal = await canal.messages.fetch(sorteio.messageId).catch(() => null);
+    if (msgOriginal) {
+      await msgOriginal.edit({ components: [linhaBotaoSorteio(true)] }).catch(() => {});
+    }
+
+    if (sorteio.participantes.length === 0) {
+      await canal.send({
+        embeds: [
+          new EmbedBuilder()
+            .setColor(COR.erro)
+            .setTitle('🎉 Sorteio VIP Kabum encerrado')
+            .setDescription('O prazo de inscrições acabou e **ninguém participou** desta vez. 😢')
+            .setFooter({ text: RODAPE })
+            .setTimestamp(),
+        ],
+      });
+      return;
+    }
+
+    const ganhadorId =
+      sorteio.participantes[Math.floor(Math.random() * sorteio.participantes.length)];
+
+    await canal.send({
+      content: `🎉 <@${ganhadorId}> é o grande ganhador do **Sorteio VIP Kabum**! Parabéns! 🎉`,
+      embeds: [
+        new EmbedBuilder()
+          .setColor(COR.sorteio)
+          .setTitle('🏆 Temos um ganhador!')
+          .setDescription(
+            `O sorteio de **R$500,00 em vale-presente Kabum** foi encerrado.\n\n🏆 Ganhador: <@${ganhadorId}>`,
+          )
+          .addFields({ name: 'Total de participantes', value: `${sorteio.participantes.length}`, inline: true })
+          .setFooter({ text: RODAPE })
+          .setTimestamp(),
+      ],
+    });
+  } catch (e) {
+    console.error('Erro ao sortear ganhador:', e.message);
+  }
+}
 
 const comandoCargosPainel = new SlashCommandBuilder()
   .setName('cargos-painel')
@@ -177,11 +273,24 @@ client.once(Events.ClientReady, async (c) => {
       comandoAvisoArmadilha.toJSON(),
       comandoCargosPainel.toJSON(),
       comandoSorteioKabum.toJSON(),
+      comandoSorteioEncerrar.toJSON(),
     ],
   });
   console.log(
-    `Online como ${c.user.tag} — /escalonar, /cheater, /devolver, /aviso-armadilha, /cargos-painel e /sorteiovipkabum registrados.`,
+    `Online como ${c.user.tag} — comandos registrados (escalonar, cheater, devolver, aviso-armadilha, cargos-painel, sorteiovipkabum, sorteio-encerrar).`,
   );
+
+  // Ao iniciar: se já havia um sorteio salvo e o prazo passou enquanto o bot estava offline, sorteia agora.
+  if (sorteio && !sorteio.sorteado && Date.now() >= sorteio.encerraEm) {
+    sortearGanhador(c);
+  }
+
+  // Verifica a cada minuto se algum sorteio ativo já venceu o prazo
+  setInterval(() => {
+    if (sorteio && !sorteio.sorteado && Date.now() >= sorteio.encerraEm) {
+      sortearGanhador(c);
+    }
+  }, 60 * 1000);
 });
 
 // ---------- Escalonamento (usado por /escalonar e /cheater) ----------
@@ -463,6 +572,15 @@ client.on(Events.InteractionCreate, async (i) => {
   if (!i.member.permissions.has('Administrator') && !i.member.roles.cache.has(cfg.cargoAdm)) {
     return negar('Só a administração pode usar este comando.', 'Acesso negado');
   }
+  if (sorteio && !sorteio.sorteado) {
+    return negar(
+      'Já existe um sorteio em andamento. Use /sorteio-encerrar para finalizá-lo antes de abrir outro.',
+    );
+  }
+
+  const dias = i.options.getInteger('dias') ?? 3;
+  const encerraEm = Date.now() + dias * 24 * 60 * 60 * 1000;
+  const tsSegundos = Math.floor(encerraEm / 1000);
 
   const embedSorteio = new EmbedBuilder()
     .setColor(COR.sorteio)
@@ -477,10 +595,9 @@ client.on(Events.InteractionCreate, async (i) => {
       { name: '🍀 Quem pode participar', value: 'Todos os membros da Caveiras', inline: true },
       {
         name: '📋 Como participar',
-        value: citar(
-          'Fique de olho nos próximos avisos da administração com a data de encerramento e as regras oficiais de inscrição.',
-        ),
+        value: citar('Clique no botão **🎟️ Participar** abaixo. É só isso!'),
       },
+      { name: '⏰ Encerramento', value: `<t:${tsSegundos}:F> (<t:${tsSegundos}:R>)` },
       { name: '🔥 Dica', value: 'Convide seus amigos para o servidor — quanto mais gente, mais animado fica!' },
     )
     .setImage('attachment://sorteio-kabum.jpeg')
@@ -492,20 +609,81 @@ client.on(Events.InteractionCreate, async (i) => {
       path.join(__dirname, 'assets', 'sorteio-kabum.jpeg'),
       { name: 'sorteio-kabum.jpeg' },
     );
-    await i.channel.send({
+    const msg = await i.channel.send({
       content: '@everyone 🎉 **SORTEIO VIP KABUM** está no ar! Não fique de fora! 🎉',
       embeds: [embedSorteio],
       files: [imagem],
+      components: [linhaBotaoSorteio()],
       allowedMentions: { parse: ['everyone'] },
     });
+
+    sorteio = {
+      messageId: msg.id,
+      channelId: msg.channelId,
+      participantes: [],
+      encerraEm,
+      sorteado: false,
+    };
+    salvarSorteio(sorteio);
+
     await i.reply({
-      embeds: [aviso(COR.ok, 'Sorteio publicado', 'O anúncio do sorteio foi postado neste canal.')],
+      embeds: [
+        aviso(
+          COR.ok,
+          'Sorteio publicado',
+          `O anúncio foi postado neste canal e encerra em ${dias} dia(s).`,
+        ),
+      ],
       flags: EPH,
     });
   } catch (err) {
     console.error('Erro ao postar sorteio:', err);
     await negar('Verifique as permissões do bot neste canal.', 'Falha ao publicar');
   }
+});
+
+// ---------- Botão "Participar" do sorteio ----------
+client.on(Events.InteractionCreate, async (i) => {
+  if (!i.isButton() || i.customId !== PREFIXO_BOTAO_SORTEIO) return;
+
+  if (!sorteio || sorteio.sorteado) {
+    return i.reply({ content: 'Não há nenhum sorteio ativo no momento.', flags: EPH });
+  }
+  if (Date.now() >= sorteio.encerraEm) {
+    return i.reply({ content: 'As inscrições já encerraram. Aguarde o resultado!', flags: EPH });
+  }
+  if (sorteio.participantes.includes(i.user.id)) {
+    return i.reply({ content: '✅ Você já está participando! Boa sorte 🍀', flags: EPH });
+  }
+
+  sorteio.participantes.push(i.user.id);
+  salvarSorteio(sorteio);
+
+  await i.reply({
+    content: `✅ Você está participando do **Sorteio VIP Kabum**! Boa sorte 🍀 (${sorteio.participantes.length} participante(s) até agora)`,
+    flags: EPH,
+  });
+});
+
+// ---------- /sorteio-encerrar ----------
+client.on(Events.InteractionCreate, async (i) => {
+  if (!i.isChatInputCommand() || i.commandName !== 'sorteio-encerrar') return;
+
+  const negar = (descricao, titulo = 'Não foi possível concluir') =>
+    i.reply({ embeds: [aviso(COR.erro, titulo, descricao)], flags: EPH });
+
+  if (!i.member.permissions.has('Administrator') && !i.member.roles.cache.has(cfg.cargoAdm)) {
+    return negar('Só a administração pode usar este comando.', 'Acesso negado');
+  }
+  if (!sorteio || sorteio.sorteado) {
+    return negar('Não há nenhum sorteio ativo no momento.');
+  }
+
+  await i.reply({
+    embeds: [aviso(COR.ok, 'Encerrando sorteio', 'O resultado será anunciado no canal do sorteio.')],
+    flags: EPH,
+  });
+  await sortearGanhador(i.client);
 });
 
 // ---------- /cargos-painel ----------
