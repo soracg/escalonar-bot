@@ -603,12 +603,12 @@ client.on(Events.InteractionCreate, async (i) => {
     .setTitle('🎉 SORTEIO VIP • R$500 EM VALE-PRESENTE KABUM! 🎉')
     .setDescription(
       '**Chegou a sua chance de turbinar o setup de graça!**\n\n' +
-        'A Caveiras está sorteando **R$500,00 em vale-presente da Kabum** para um membro da nossa comunidade. ' +
-        'Pode ser aquele periférico novo, upgrade na máquina ou o que você quiser — o prêmio é todo seu!',
+        'A Caveiras está sorteando **R$500,00 em vale-presente da Kabum** para um membro do nosso clã ' +
+        'Pode ser aquele periférico novo, upgrade na máquina ou o que você quiser o prêmio é todo seu e quem escolhe é você!',
     )
     .addFields(
       { name: '💰 Prêmio', value: 'R$500,00 em vale-presente Kabum', inline: true },
-      { name: '🍀 Quem pode participar', value: 'Todos os membros da Caveiras', inline: true },
+      { name: '🍀 Quem pode participar', value: 'Todos os membros dos Caveiras', inline: true },
       {
         name: '📋 Como participar',
         value: citar('Clique no botão **🎟️ Participar** abaixo. É só isso!'),
