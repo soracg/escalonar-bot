@@ -47,6 +47,7 @@ const COR = {
   alerta: 0xdc2626,
   ok: 0x3b82f6,
   erro: 0xef4444,
+  sorteio: 0xf1c40f,
 };
 const RODAPE = 'Caveiras • Sistema de Tickets';
 const citar = (texto) => `>>> ${texto}`;
@@ -68,12 +69,12 @@ async function enviarEm(guild, canalId, payload) {
 
 // ---------- Cargos de autosserviço (botões) ----------
 const CARGOS_PAINEL = [
+  { id: '1555231437651972201', label: '💣 Hell Let Loose' },
+  { id: '1555231449907470506', label: '🐶 Wardogs' },
   { id: '1555235580625944576', label: '🎖️ Premiações' },
   { id: '1555235317550948434', label: '🪖 Eventos' },
   { id: '1555235262018228295', label: '🎮 Casual' },
   { id: '1555235062918680668', label: '🏆 Competitivo' },
-  { id: '1555231449907470506', label: '🐶 Wardogs' },
-  { id: '1555231437651972201', label: '💣 Hell Let Loose' },
 ];
 const PREFIXO_BOTAO_CARGO = 'cargo:';
 
@@ -145,6 +146,11 @@ const comandoDevolver = new SlashCommandBuilder()
   )
   .setDMPermission(false);
 
+const comandoSorteioKabum = new SlashCommandBuilder()
+  .setName('sorteiovipkabum')
+  .setDescription('Anuncia o sorteio de R$500 em vale-presente da Kabum (só ADM)')
+  .setDMPermission(false);
+
 const comandoCargosPainel = new SlashCommandBuilder()
   .setName('cargos-painel')
   .setDescription('Posta o painel de botões para os membros pegarem seus cargos (só ADM)')
@@ -168,10 +174,11 @@ client.once(Events.ClientReady, async (c) => {
       comandoDevolver.toJSON(),
       comandoAvisoArmadilha.toJSON(),
       comandoCargosPainel.toJSON(),
+      comandoSorteioKabum.toJSON(),
     ],
   });
   console.log(
-    `Online como ${c.user.tag} — /escalonar, /cheater, /devolver, /aviso-armadilha e /cargos-painel registrados.`,
+    `Online como ${c.user.tag} — /escalonar, /cheater, /devolver, /aviso-armadilha, /cargos-painel e /sorteiovipkabum registrados.`,
   );
 });
 
@@ -444,6 +451,56 @@ client.on(Events.InteractionCreate, async (i) => {
   }
 });
 
+// ---------- /sorteiovipkabum ----------
+client.on(Events.InteractionCreate, async (i) => {
+  if (!i.isChatInputCommand() || i.commandName !== 'sorteiovipkabum') return;
+
+  const negar = (descricao, titulo = 'Não foi possível concluir') =>
+    i.reply({ embeds: [aviso(COR.erro, titulo, descricao)], flags: EPH });
+
+  if (!i.member.permissions.has('Administrator') && !i.member.roles.cache.has(cfg.cargoAdm)) {
+    return negar('Só a administração pode usar este comando.', 'Acesso negado');
+  }
+
+  const embedSorteio = new EmbedBuilder()
+    .setColor(COR.sorteio)
+    .setTitle('🎉 SORTEIO VIP • R$500 EM VALE-PRESENTE KABUM! 🎉')
+    .setDescription(
+      '**Chegou a sua chance de turbinar o setup de graça!**\n\n' +
+        'A Caveiras está sorteando **R$500,00 em vale-presente da Kabum** para um membro da nossa comunidade. ' +
+        'Pode ser aquele periférico novo, upgrade na máquina ou o que você quiser — o prêmio é todo seu!',
+    )
+    .addFields(
+      { name: '💰 Prêmio', value: 'R$500,00 em vale-presente Kabum', inline: true },
+      { name: '🍀 Quem pode participar', value: 'Todos os membros da Caveiras', inline: true },
+      {
+        name: '📋 Como participar',
+        value: citar(
+          'Fique de olho nos próximos avisos da administração com a data de encerramento e as regras oficiais de inscrição.',
+        ),
+      },
+      { name: '🔥 Dica', value: 'Convide seus amigos para o servidor — quanto mais gente, mais animado fica!' },
+    )
+    .setImage('https://i.imgur.com/NbX6V0F.jpeg')
+    .setFooter({ text: RODAPE })
+    .setTimestamp();
+
+  try {
+    await i.channel.send({
+      content: '@everyone 🎉 **SORTEIO VIP KABUM** está no ar! Não fique de fora! 🎉',
+      embeds: [embedSorteio],
+      allowedMentions: { parse: ['everyone'] },
+    });
+    await i.reply({
+      embeds: [aviso(COR.ok, 'Sorteio publicado', 'O anúncio do sorteio foi postado neste canal.')],
+      flags: EPH,
+    });
+  } catch (err) {
+    console.error('Erro ao postar sorteio:', err);
+    await negar('Verifique as permissões do bot neste canal.', 'Falha ao publicar');
+  }
+});
+
 // ---------- /cargos-painel ----------
 client.on(Events.InteractionCreate, async (i) => {
   if (!i.isChatInputCommand() || i.commandName !== 'cargos-painel') return;
@@ -459,7 +516,7 @@ client.on(Events.InteractionCreate, async (i) => {
     .setColor(COR.ok)
     .setTitle('🎟️ Escolha seus cargos')
     .setDescription(
-      'Clique nos botões abaixo para pegar ou remover um cargo. Use para liberar acesso aos canais e marcações de eventos e jogos. Caso alguma categoria tenha sumido, clique no botão respectivo para voltar a ter visão do canal.',
+      'Clique nos botões abaixo para pegar ou remover um cargo. Use para liberar acesso aos canais e marcações de eventos, jogos e divisões.',
     )
     .addFields({
       name: 'Cargos disponíveis',
