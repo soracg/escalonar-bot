@@ -155,12 +155,10 @@ const comandoAvisoArmadilha = new SlashCommandBuilder().setName('aviso-armadilha
 const DADOS_VOZ = path.join(__dirname, 'data', 'voz.json');
 const NOME_BACKUP_VOZ = 'voz-backup.json';
 
-// 1. A função de carregar sobe para podermos usá-la imediatamente
 function carregarVozLocal() {
   try { return JSON.parse(fs.readFileSync(DADOS_VOZ, 'utf8')); } catch { return {}; }
 }
 
-// 2. Já iniciamos a variável lendo o ficheiro local, nunca começa vazia!
 let temposVoz = carregarVozLocal(); 
 let sessoesVoz = {}; 
 let msgRankingId = null;
@@ -174,7 +172,6 @@ function salvarVozLocal() {
 }
 
 function adicionarTempoVoz(userId, duracaoMs) {
-  // 3. Lê o ficheiro atual para garantir que fundimos a memória sem apagar ninguém
   const dadosSalvos = carregarVozLocal();
   temposVoz = { ...dadosSalvos, ...temposVoz }; 
   
@@ -194,6 +191,26 @@ function getTemposAtuaisVoz() {
   return combinados;
 }
 
+// Mapeia todos que já estão em call quando o bot inicia
+async function mapearMembrosEmVoz(client) {
+  const agora = Date.now();
+  try {
+    const guild = await client.guilds.fetch(cfg.guildId);
+    const channels = await guild.channels.fetch();
+    for (const [, channel] of channels) {
+      if (channel?.isVoiceBased()) {
+        for (const [, member] of channel.members) {
+          if (!member.user.bot && !sessoesVoz[member.id]) {
+            sessoesVoz[member.id] = agora;
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.error('[voz] Erro ao mapear membros em voz:', e.message);
+  }
+}
+
 function formatarTempo(ms) {
   const totalMin = Math.floor(ms / 60000);
   const horas = Math.floor(totalMin / 60);
@@ -205,14 +222,29 @@ function formatarTempo(ms) {
 async function enviarBackupVoz(client) {
   if (!client || !cfg.canalBackupVoz) return;
   try {
-    const canal = await client.channels.fetch(cfg.canalBackupVoz);
-    const anteriorId = backupVozMsgId;
+    const canal = await client.channels.fetch(cfg.canalBackupVoz).catch(() => null);
+    if (!canal) return;
+
+    // 1. Inclui o tempo ao vivo de quem está na call no backup
+    const dadosParaBackup = getTemposAtuaisVoz();
+
+    // 2. Procura todas as mensagens de backup antigas enviadas pelo bot no canal para apagar
+    const msgs = await canal.messages.fetch({ limit: 20 }).catch(() => null);
+    const msgsAntigas = msgs ? msgs.filter(m => m.author.id === client.user.id && m.attachments.some(a => a.name === NOME_BACKUP_VOZ)) : null;
+
+    // 3. Envia o novo backup
     const msg = await canal.send({
-      content: `🎙️ Backup Automático: Tempo de Voz (${Object.keys(temposVoz).length} registros)`,
-      files: [new AttachmentBuilder(Buffer.from(JSON.stringify(temposVoz, null, 2)), { name: NOME_BACKUP_VOZ })]
+      content: `🎙️ Backup Automático: Tempo de Voz (${Object.keys(dadosParaBackup).length} registros)`,
+      files: [new AttachmentBuilder(Buffer.from(JSON.stringify(dadosParaBackup, null, 2)), { name: NOME_BACKUP_VOZ })]
     });
     backupVozMsgId = msg.id;
-    if (anteriorId) await canal.messages.delete(anteriorId).catch(() => {});
+
+    // 4. Limpa as mensagens antigas mantendo apenas a recém-enviada
+    if (msgsAntigas && msgsAntigas.size > 0) {
+      for (const [, m] of msgsAntigas) {
+        if (m.id !== msg.id) await m.delete().catch(() => {});
+      }
+    }
   } catch (e) { console.error('[voz] Falha ao enviar backup:', e.message); }
 }
 
@@ -232,8 +264,7 @@ async function restaurarBackupVoz(client) {
       const resp = await fetch(anexo.url);
       const salvo = await resp.json();
       
-      if (typeof salvo === 'object') {
-        // 4. Em vez de sobrescrever, mescla mantendo sempre o maior tempo de cada utilizador
+      if (salvo && typeof salvo === 'object') {
         for (const id in salvo) {
           if (!temposVoz[id] || salvo[id] > temposVoz[id]) {
             temposVoz[id] = salvo[id];
@@ -426,6 +457,7 @@ client.once(Events.ClientReady, async (c) => {
   
   await restaurarBackupSorteio(c);
   await restaurarBackupVoz(c);
+  await mapearMembrosEmVoz(c);
 
   if (cfg.deployCmds) {
     try {
@@ -448,6 +480,7 @@ client.once(Events.ClientReady, async (c) => {
     if (sorteio && !sorteio.sorteado && Date.now() >= sorteio.encerraEm) sortearGanhador(c);
   }, 15000);
 
+  // Backup e ranking rodando a cada 5 minutos
   setInterval(() => enviarBackupVoz(clientBackup), 5 * 60 * 1000);
   setInterval(() => atualizarRanking(clientBackup), 5 * 60 * 1000);
 });
