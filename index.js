@@ -273,20 +273,17 @@ async function restaurarBackupVoz(client) {
       const salvo = await resp.json();
       
       if (salvo && typeof salvo === 'object') {
-        for (const id in salvo) {
-          if (!temposVoz[id] || salvo[id] > temposVoz[id]) {
-            temposVoz[id] = salvo[id];
-          }
-        }
+        // Força o bot a sempre carregar exatamente o que está no arquivo voz-backup.json
+        temposVoz = salvo;
         salvarVozLocal();
+        console.log('[voz] Dados de voz restaurados com sucesso do voz-backup.json.');
       }
     } else { 
-      const dadosLocais = carregarVozLocal();
-      temposVoz = { ...dadosLocais, ...temposVoz };
+      temposVoz = carregarVozLocal();
     }
   } catch (e) { 
-    const dadosLocais = carregarVozLocal();
-    temposVoz = { ...dadosLocais, ...temposVoz };
+    console.error('[voz] Erro ao carregar o backup do Discord:', e.message);
+    temposVoz = carregarVozLocal();
   }
 }
 
@@ -311,24 +308,25 @@ async function atualizarRanking(client) {
       .setColor(RANKING_CFG.corEmbed)
       .setTitle(RANKING_CFG.titulo)
       .setDescription(textoRank)
-      .setFooter({ text: 'Atualizado automaticamente a cada 5 minutos • ' + RODAPE })
+      .setFooter({ text: 'Atualizado automaticamente a cada 2 minutos • ' + RODAPE })
       .setTimestamp();
 
-    if (msgRankingId) {
-      const msg = await canal.messages.fetch(msgRankingId).catch(() => null);
-      if (msg) {
-        await msg.edit({ embeds: [embed] });
-        return;
-      }
-    }
-
+    // Busca as últimas mensagens do canal
     const ultimas = await canal.messages.fetch({ limit: 10 });
-    const minhaMsg = ultimas.find(m => m.author.id === client.user.id && m.embeds[0]?.title?.includes('Ranking'));
+    const minhasMsgs = Array.from(ultimas.values()).filter(m => m.author.id === client.user.id);
 
-    if (minhaMsg) {
-      msgRankingId = minhaMsg.id;
-      await minhaMsg.edit({ embeds: [embed] });
+    if (minhasMsgs.length > 0) {
+      // Pega SEMPRE a primeira mensagem enviada pelo bot para editar
+      const primeiraMsg = minhasMsgs[0];
+      msgRankingId = primeiraMsg.id;
+      await primeiraMsg.edit({ embeds: [embed] });
+
+      // Se houver mensagens extras (a segunda/última), apaga todas
+      for (let i = 1; i < minhasMsgs.length; i++) {
+        await minhasMsgs[i].delete().catch(() => {});
+      }
     } else {
+      // Se ainda não existir nenhuma mensagem, envia uma nova
       const enviada = await canal.send({ embeds: [embed] });
       msgRankingId = enviada.id;
     }
