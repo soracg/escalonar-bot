@@ -34,8 +34,12 @@ const cfg = {
   canalCastigo: env.CANAL_CASTIGO_ID || null, // canal-armadilha (ex.: primeiro canal do servidor)
   castigoDias: Number(env.CASTIGO_DIAS ?? 7),
   castigoAlertaChannel: env.CASTIGO_ALERTA_CHANNEL_ID || null, // canal de avisos de castigo (spam/invasão)
-  backupChannel: env.BACKUP_CHANNEL_ID || env.LOG_CHANNEL_ID || null, // canal (privado) onde o bot guarda o backup do sorteio
+  backupChannel: env.BACKUP_CHANNEL_ID || env.LOG_CHANNEL_ID || null, // canal do backup do SORTEIO
   deployCmds: (env.DEPLOY_CMDS ?? 'false') === 'true', // Controle para evitar Rate Limits
+  
+  // ---------- Canais de Voz & Ranking ----------
+  canalBackupVoz: '1556730438104514670',
+  canalRankingVoz: '1556729125195218974',
 };
 
 for (const k of ['token', 'clientId', 'guildId', 'catAtendimento', 'catEscalonado', 'cargoAdm']) {
@@ -53,8 +57,9 @@ const COR = {
   ok: 0x3b82f6,
   erro: 0xef4444,
   sorteio: 0xf1c40f,
+  voz: 0x9333ea,
 };
-const RODAPE = 'Caveiras • Sistema de Tickets';
+const RODAPE = 'Caveiras • Sistema Automatizado';
 const citar = (texto) => `>>> ${texto}`;
 const EPH = MessageFlags.Ephemeral;
 
@@ -105,226 +110,257 @@ function linhasBotoesCargos() {
 const comandoEscalonar = new SlashCommandBuilder()
   .setName('escalonar')
   .setDescription('Escalona este ticket para a administração')
-  .addStringOption((o) =>
-    o
-      .setName('motivo')
-      .setDescription('Motivo do escalonamento')
-      .setMaxLength(500)
-      .setRequired(true),
-  )
+  .addStringOption((o) => o.setName('motivo').setDescription('Motivo do escalonamento').setMaxLength(500).setRequired(true))
   .setDMPermission(false);
 
 const comandoCheater = new SlashCommandBuilder()
   .setName('cheater')
   .setDescription('Sinaliza suspeita de cheater e escalona o ticket com prioridade')
-  .addStringOption((o) =>
-    o
-      .setName('jogador')
-      .setDescription('Nick ou ID do jogador suspeito')
-      .setMaxLength(100)
-      .setRequired(true),
-  )
-  .addStringOption((o) =>
-    o
-      .setName('motivo')
-      .setDescription('O que motivou a suspeita')
-      .setMaxLength(500)
-      .setRequired(true),
-  )
-  .addStringOption((o) =>
-    o
-      .setName('evidencia')
-      .setDescription('Link de vídeo/print ou descrição da prova, se houver')
-      .setMaxLength(300),
-  )
+  .addStringOption((o) => o.setName('jogador').setDescription('Nick ou ID do jogador suspeito').setMaxLength(100).setRequired(true))
+  .addStringOption((o) => o.setName('motivo').setDescription('O que motivou a suspeita').setMaxLength(500).setRequired(true))
+  .addStringOption((o) => o.setName('evidencia').setDescription('Link de vídeo/print ou descrição da prova, se houver').setMaxLength(300))
   .setDMPermission(false);
 
 const comandoDevolver = new SlashCommandBuilder()
   .setName('devolver')
   .setDescription('Devolve este ticket para a categoria de atendimento (só ADM)')
-  .addStringOption((o) =>
-    o
-      .setName('motivo')
-      .setDescription('Motivo da devolução ao atendimento')
-      .setMaxLength(500)
-      .setRequired(true),
-  )
+  .addStringOption((o) => o.setName('motivo').setDescription('Motivo da devolução ao atendimento').setMaxLength(500).setRequired(true))
   .setDMPermission(false);
 
 const comandoSorteioKabum = new SlashCommandBuilder()
   .setName('sorteiovipkabum')
   .setDescription('Anuncia o sorteio de R$500 em vale-presente da Kabum (só ADM)')
-  .addIntegerOption((o) =>
-    o
-      .setName('dias')
-      .setDescription('Duração do sorteio em dias (padrão: 3)')
-      .setMinValue(1)
-      .setMaxValue(30),
-  )
+  .addIntegerOption((o) => o.setName('dias').setDescription('Duração do sorteio em dias (padrão: 3)').setMinValue(1).setMaxValue(30))
   .setDMPermission(false);
 
-const comandoSorteioEncerrar = new SlashCommandBuilder()
-  .setName('sorteio-encerrar')
-  .setDescription('Encerra o sorteio ativo agora e sorteia o ganhador (só ADM)')
-  .setDMPermission(false);
+const comandoSorteioEncerrar = new SlashCommandBuilder().setName('sorteio-encerrar').setDescription('Encerra o sorteio ativo agora e sorteia o ganhador (só ADM)').setDMPermission(false);
+const comandoSorteioStatus = new SlashCommandBuilder().setName('sorteio-status').setDescription('Mostra quem está participando do sorteio ativo (só ADM)').setDMPermission(false);
+const comandoCargosPainel = new SlashCommandBuilder().setName('cargos-painel').setDescription('Posta o painel de botões para os membros pegarem seus cargos (só ADM)').setDMPermission(false);
+const comandoAvisoArmadilha = new SlashCommandBuilder().setName('aviso-armadilha').setDescription('Posta e fixa o aviso explicando o canal-armadilha (só ADM)').setDMPermission(false);
 
-const comandoSorteioStatus = new SlashCommandBuilder()
-  .setName('sorteio-status')
-  .setDescription('Mostra quem está participando do sorteio ativo (só ADM)')
-  .setDMPermission(false);
+// ---------- 🎙️ RANKING E TEMPO DE VOZ ----------
+const DADOS_VOZ = path.join(__dirname, 'data', 'voz.json');
+const NOME_BACKUP_VOZ = 'voz-backup.json';
 
-const comandoCargosPainel = new SlashCommandBuilder()
-  .setName('cargos-painel')
-  .setDescription('Posta o painel de botões para os membros pegarem seus cargos (só ADM)')
-  .setDMPermission(false);
+let temposVoz = {}; // { "userId": milissegundos_totais }
+let sessoesVoz = {}; // { "userId": timestamp_de_entrada }
+let msgRankingId = null;
+let backupVozMsgId = null;
 
-const comandoAvisoArmadilha = new SlashCommandBuilder()
-  .setName('aviso-armadilha')
-  .setDescription('Posta e fixa o aviso explicando o canal-armadilha (só ADM)')
-  .setDMPermission(false);
+function carregarVozLocal() {
+  try { return JSON.parse(fs.readFileSync(DADOS_VOZ, 'utf8')); }
+  catch { return {}; }
+}
 
-// ---------- Persistência simples do sorteio (sobrevive a reinícios) ----------
+function salvarVozLocal() {
+  try {
+    fs.mkdirSync(path.dirname(DADOS_VOZ), { recursive: true });
+    fs.writeFileSync(DADOS_VOZ, JSON.stringify(temposVoz, null, 2));
+  } catch (e) { console.error('Erro ao salvar voz.json local:', e.message); }
+}
+
+function adicionarTempoVoz(userId, duracaoMs) {
+  if (!temposVoz[userId]) temposVoz[userId] = 0;
+  temposVoz[userId] += duracaoMs;
+  salvarVozLocal();
+}
+
+function getTemposAtuaisVoz() {
+  const agora = Date.now();
+  const combinados = { ...temposVoz };
+  for (const [id, start] of Object.entries(sessoesVoz)) {
+    if (!combinados[id]) combinados[id] = 0;
+    combinados[id] += (agora - start);
+  }
+  return combinados;
+}
+
+function formatarTempo(ms) {
+  const totalMin = Math.floor(ms / 60000);
+  const horas = Math.floor(totalMin / 60);
+  const min = totalMin % 60;
+  if (horas > 0) return `${horas}h${min}m`;
+  return `${min}m`;
+}
+
+async function enviarBackupVoz(client) {
+  if (!client || !cfg.canalBackupVoz) return;
+  try {
+    const canal = await client.channels.fetch(cfg.canalBackupVoz);
+    const anteriorId = backupVozMsgId;
+    const msg = await canal.send({
+      content: `🎙️ Backup Automático: Tempo de Voz (${Object.keys(temposVoz).length} usuários registrados)`,
+      files: [new AttachmentBuilder(Buffer.from(JSON.stringify(temposVoz, null, 2)), { name: NOME_BACKUP_VOZ })]
+    });
+    backupVozMsgId = msg.id;
+    if (anteriorId) await canal.messages.delete(anteriorId).catch(() => {});
+  } catch (e) {
+    console.error('[voz] Falha ao enviar backup de voz:', e.message);
+  }
+}
+
+async function restaurarBackupVoz(client) {
+  if (!cfg.canalBackupVoz) return;
+  try {
+    const canal = await client.channels.fetch(cfg.canalBackupVoz).catch(() => null);
+    if (!canal) return;
+    const msgs = await canal.messages.fetch({ limit: 20 });
+    const alvo = [...msgs.values()]
+      .filter(m => m.author.id === client.user.id && m.attachments.some(a => a.name === NOME_BACKUP_VOZ))
+      .sort((a, b) => b.createdTimestamp - a.createdTimestamp)[0];
+
+    if (alvo) {
+      backupVozMsgId = alvo.id;
+      const anexo = alvo.attachments.find(a => a.name === NOME_BACKUP_VOZ);
+      const resp = await fetch(anexo.url);
+      const salvo = await resp.json();
+      if (typeof salvo === 'object') {
+        temposVoz = salvo;
+        salvarVozLocal();
+        console.log(`[voz] Backup restaurado: ${Object.keys(temposVoz).length} registros.`);
+      }
+    } else {
+      temposVoz = carregarVozLocal();
+    }
+  } catch (e) {
+    console.error('[voz] Erro na restauração:', e.message);
+    temposVoz = carregarVozLocal();
+  }
+}
+
+async function atualizarRanking(client) {
+  try {
+    const canal = await client.channels.fetch(cfg.canalRankingVoz).catch(() => null);
+    if (!canal) return;
+
+    const dados = getTemposAtuaisVoz();
+    const rank = Object.entries(dados)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 15); // Exibe o Top 15
+
+    let textoRank = rank.length > 0
+      ? rank.map(([id, ms], i) => `**${i + 1}º** <@${id}> — \`${formatarTempo(ms)}\``).join('\n\n')
+      : 'Nenhum tempo registrado ainda. Entre em uma call!';
+
+    const embed = new EmbedBuilder()
+      .setColor(COR.voz)
+      .setTitle('🏆 Ranking de Tempo em Call')
+      .setDescription(textoRank)
+      .setFooter({ text: 'Atualizado automaticamente a cada 5 minutos • ' + RODAPE })
+      .setTimestamp();
+
+    if (msgRankingId) {
+      const msg = await canal.messages.fetch(msgRankingId).catch(() => null);
+      if (msg) {
+        await msg.edit({ embeds: [embed] });
+        return;
+      }
+    }
+
+    const ultimas = await canal.messages.fetch({ limit: 10 });
+    const minhaMsg = ultimas.find(m => m.author.id === client.user.id && m.embeds[0]?.title?.includes('Ranking'));
+
+    if (minhaMsg) {
+      msgRankingId = minhaMsg.id;
+      await minhaMsg.edit({ embeds: [embed] });
+    } else {
+      const enviada = await canal.send({ embeds: [embed] });
+      msgRankingId = enviada.id;
+    }
+  } catch (e) {
+    console.error('[voz] Erro ao atualizar o ranking:', e.message);
+  }
+}
+
+// ---------- Persistência simples do sorteio ----------
 const DADOS_SORTEIO = path.join(__dirname, 'data', 'sorteio.json');
 const PREFIXO_BOTAO_SORTEIO = 'sorteio_participar';
 
-// Cargos autorizados a participar do sorteio
 const CARGOS_PODEM_PARTICIPAR = [
   '1400511336437514452', // Membro Efetivo
   '1401000578372604028', // Recruta
   '1404521279775834184', // Moderador
-  '409442142667145247', // ADM (confira este ID)
+  '409442142667145247',  // ADM
   '1401534428416708779', // Recrutador
   '1419044618711994510', // Dev
 ];
 
 function carregarSorteio() {
-  try {
-    return JSON.parse(fs.readFileSync(DADOS_SORTEIO, 'utf8'));
-  } catch {
-    return null;
-  }
+  try { return JSON.parse(fs.readFileSync(DADOS_SORTEIO, 'utf8')); } catch { return null; }
 }
 
 function salvarSorteio(s) {
   try {
     fs.mkdirSync(path.dirname(DADOS_SORTEIO), { recursive: true });
     fs.writeFileSync(DADOS_SORTEIO, JSON.stringify(s, null, 2));
-  } catch (e) {
-    console.error('Falha ao salvar dados do sorteio:', e.message);
-  }
-  agendarBackup();
+  } catch (e) {}
+  agendarBackupSorteio();
 }
 
-let sorteio = carregarSorteio(); // { messageId, channelId, participantes: [], encerraEm, sorteado }
+let sorteio = carregarSorteio(); 
 
-// ---------- Backup do sorteio em um canal do Discord ----------
-const NOME_BACKUP = 'sorteio-backup.json';
+const NOME_BACKUP_SORTEIO = 'sorteio-backup.json';
 let clientBackup = null;
-let backupTimer = null;
-let backupMsgId = null;
-let filaBackup = Promise.resolve();
+let backupSorteioTimer = null;
+let backupSorteioMsgId = null;
+let filaBackupSorteio = Promise.resolve();
 
-function agendarBackup() {
-  if (!clientBackup || !cfg.backupChannel || backupTimer) return;
-  backupTimer = setTimeout(() => {
-    backupTimer = null;
-    filaBackup = filaBackup.then(enviarBackup).catch(() => {});
+function agendarBackupSorteio() {
+  if (!clientBackup || !cfg.backupChannel || backupSorteioTimer) return;
+  backupSorteioTimer = setTimeout(() => {
+    backupSorteioTimer = null;
+    filaBackupSorteio = filaBackupSorteio.then(enviarBackupSorteio).catch(() => {});
   }, 5000);
 }
 
-async function enviarBackup() {
+async function enviarBackupSorteio() {
   if (!sorteio || !clientBackup || !cfg.backupChannel) return;
   try {
     const canal = await clientBackup.channels.fetch(cfg.backupChannel);
-    const anteriorId = backupMsgId;
+    const anteriorId = backupSorteioMsgId;
     const msg = await canal.send({
-      content: `💾 Backup automático do sorteio — ${sorteio.participantes.length} participante(s). Não apague esta mensagem.`,
-      files: [new AttachmentBuilder(Buffer.from(JSON.stringify(sorteio, null, 2)), { name: NOME_BACKUP })],
+      content: `💾 Backup automático do sorteio — ${sorteio.participantes.length} participante(s). Não apague.`,
+      files: [new AttachmentBuilder(Buffer.from(JSON.stringify(sorteio, null, 2)), { name: NOME_BACKUP_SORTEIO })],
       allowedMentions: { parse: [] },
     });
-    backupMsgId = msg.id;
+    backupSorteioMsgId = msg.id;
     if (anteriorId) await canal.messages.delete(anteriorId).catch(() => {});
   } catch (e) {
-    console.error('[backup] falha ao enviar backup do sorteio:', e.message);
+    console.error('[backup sorteio] falha ao enviar:', e.message);
   }
 }
 
-function gravarSorteioLocal(s) {
+async function restaurarBackupSorteio(client) {
+  if (!cfg.backupChannel) return;
   try {
-    fs.mkdirSync(path.dirname(DADOS_SORTEIO), { recursive: true });
-    fs.writeFileSync(DADOS_SORTEIO, JSON.stringify(s, null, 2));
-  } catch (e) {
-    console.error('Falha ao salvar dados do sorteio:', e.message);
-  }
-}
-
-async function restaurarBackup(client) {
-  if (!cfg.backupChannel) {
-    console.warn('[backup] BACKUP_CHANNEL_ID não definido: o sorteio NÃO sobreviverá a reinícios no Render.');
-    return;
-  }
-  try {
-    const canal = await client.channels.fetch(cfg.backupChannel);
+    const canal = await client.channels.fetch(cfg.backupChannel).catch(()=>null);
+    if (!canal) return;
     const msgs = await canal.messages.fetch({ limit: 100 });
     const alvo = [...msgs.values()]
-      .filter((m) => m.author.id === client.user.id && m.attachments.some((a) => a.name === NOME_BACKUP))
+      .filter((m) => m.author.id === client.user.id && m.attachments.some((a) => a.name === NOME_BACKUP_SORTEIO))
       .sort((a, b) => b.createdTimestamp - a.createdTimestamp)[0];
 
-    if (!alvo) {
-      console.log('[backup] nenhum backup de sorteio encontrado no canal.');
-      return;
+    if (alvo) {
+      backupSorteioMsgId = alvo.id;
+      const anexo = alvo.attachments.find((a) => a.name === NOME_BACKUP_SORTEIO);
+      const resp = await fetch(anexo.url);
+      const salvo = await resp.json();
+      if (salvo && Array.isArray(salvo.participantes)) {
+        if (!sorteio) sorteio = salvo;
+        else if (sorteio.messageId === salvo.messageId) {
+          sorteio.participantes = [...new Set([...sorteio.participantes, ...salvo.participantes])];
+          sorteio.sorteado = Boolean(sorteio.sorteado || salvo.sorteado);
+        }
+        salvarSorteio(sorteio);
+      }
     }
-    backupMsgId = alvo.id;
-
-    const anexo = alvo.attachments.find((a) => a.name === NOME_BACKUP);
-    const resp = await fetch(anexo.url);
-    const salvo = await resp.json();
-    if (!salvo || !Array.isArray(salvo.participantes)) throw new Error('backup inválido');
-
-    if (!sorteio) {
-      sorteio = salvo;
-      gravarSorteioLocal(sorteio);
-      console.log(`[backup] sorteio restaurado: ${sorteio.participantes.length} participante(s).`);
-    } else if (sorteio.messageId === salvo.messageId) {
-      sorteio.participantes = [...new Set([...sorteio.participantes, ...salvo.participantes])];
-      sorteio.sorteado = Boolean(sorteio.sorteado || salvo.sorteado);
-      gravarSorteioLocal(sorteio);
-      console.log(`[backup] estado local conferido com o backup: ${sorteio.participantes.length} participante(s).`);
-    }
-  } catch (e) {
-    console.error('[backup] falha ao restaurar:', e.message);
-  }
-}
-
-function aplicarSementeSorteio() {
-  if (sorteio || !env.SORTEIO_SEED) return;
-  try {
-    const seed = JSON.parse(env.SORTEIO_SEED);
-    if (!seed || !Array.isArray(seed.participantes) || !seed.messageId || !seed.channelId || !seed.encerraEm) {
-      throw new Error('faltam campos (messageId, channelId, participantes, encerraEm)');
-    }
-    sorteio = {
-      messageId: String(seed.messageId),
-      channelId: String(seed.channelId),
-      participantes: [...new Set(seed.participantes.map(String))],
-      encerraEm: Number(seed.encerraEm),
-      sorteado: Boolean(seed.sorteado),
-    };
-    salvarSorteio(sorteio);
-    console.log(`[backup] sorteio criado a partir de SORTEIO_SEED: ${sorteio.participantes.length} participante(s). Pode apagar essa variável.`);
-  } catch (e) {
-    console.error('[backup] SORTEIO_SEED inválido:', e.message);
-  }
+  } catch (e) { console.error('[backup sorteio] falha ao restaurar:', e.message); }
 }
 
 async function finalizar() {
   setTimeout(() => process.exit(0), 10000).unref();
-  if (backupTimer) {
-    clearTimeout(backupTimer);
-    backupTimer = null;
-    filaBackup = filaBackup.then(enviarBackup).catch(() => {});
-  }
-  await filaBackup;
+  salvarVozLocal();
+  await filaBackupSorteio;
   process.exit(0);
 }
 
@@ -333,12 +369,7 @@ process.on('SIGINT', finalizar);
 
 function linhaBotaoSorteio(desativado = false) {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(PREFIXO_BOTAO_SORTEIO)
-      .setLabel('Participar')
-      .setEmoji('🎟️')
-      .setStyle(ButtonStyle.Success)
-      .setDisabled(desativado),
+    new ButtonBuilder().setCustomId(PREFIXO_BOTAO_SORTEIO).setLabel('Participar').setEmoji('🎟️').setStyle(ButtonStyle.Success).setDisabled(desativado)
   );
 }
 
@@ -352,715 +383,280 @@ async function sortearGanhador(client) {
     if (!canal) return;
 
     const msgOriginal = await canal.messages.fetch(sorteio.messageId).catch(() => null);
-    if (msgOriginal) {
-      await msgOriginal.edit({ components: [linhaBotaoSorteio(true)] }).catch(() => {});
-    }
+    if (msgOriginal) await msgOriginal.edit({ components: [linhaBotaoSorteio(true)] }).catch(() => {});
 
     if (sorteio.participantes.length === 0) {
       await canal.send({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(COR.erro)
-            .setTitle('🎉 Sorteio VIP Kabum encerrado')
-            .setDescription('O prazo de inscrições acabou e **ninguém participou** desta vez. 😢')
-            .setFooter({ text: RODAPE })
-            .setTimestamp(),
-        ],
+        embeds: [new EmbedBuilder().setColor(COR.erro).setTitle('🎉 Sorteio VIP Kabum encerrado').setDescription('Ninguém participou desta vez. 😢').setFooter({ text: RODAPE })],
       });
       return;
     }
-
     const ganhadorId = sorteio.participantes[Math.floor(Math.random() * sorteio.participantes.length)];
-
     await canal.send({
       content: `🎉 <@${ganhadorId}> é o grande ganhador do **Sorteio VIP Kabum**! Parabéns! 🎉`,
       embeds: [
         new EmbedBuilder()
           .setColor(COR.sorteio)
           .setTitle('🏆 Temos um ganhador!')
-          .setDescription(
-            `O sorteio de **R$500,00 em vale-presente Kabum** foi encerrado.\n\n🏆 Ganhador: <@${ganhadorId}>`,
-          )
+          .setDescription(`O sorteio foi encerrado.\n\n🏆 Ganhador: <@${ganhadorId}>`)
           .addFields({ name: 'Total de participantes', value: `${sorteio.participantes.length}`, inline: true })
           .setFooter({ text: RODAPE })
-          .setTimestamp(),
       ],
     });
-  } catch (e) {
-    console.error('Erro ao sortear ganhador:', e.message);
-  }
+  } catch (e) { console.error('Erro ao sortear:', e.message); }
 }
 
+// ATENÇÃO: GatewayIntentBits.GuildVoiceStates adicionado para o ranking funcionar!
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildVoiceStates],
 });
 
 client.once(Events.ClientReady, async (c) => {
   clientBackup = c;
-  await restaurarBackup(c);
-  aplicarSementeSorteio();
+  
+  // Restaurar dados salvos
+  await restaurarBackupSorteio(c);
+  await restaurarBackupVoz(c);
 
-  // Proteção contra Rate Limits na atualização de comandos
+  // Registro de Slash Commands
   if (cfg.deployCmds) {
     try {
       const rest = new REST().setToken(cfg.token);
       await rest.put(Routes.applicationGuildCommands(cfg.clientId, cfg.guildId), {
         body: [
-          comandoEscalonar.toJSON(),
-          comandoCheater.toJSON(),
-          comandoDevolver.toJSON(),
-          comandoAvisoArmadilha.toJSON(),
-          comandoCargosPainel.toJSON(),
-          comandoSorteioKabum.toJSON(),
-          comandoSorteioEncerrar.toJSON(),
-          comandoSorteioStatus.toJSON(),
+          comandoEscalonar.toJSON(), comandoCheater.toJSON(), comandoDevolver.toJSON(),
+          comandoAvisoArmadilha.toJSON(), comandoCargosPainel.toJSON(), comandoSorteioKabum.toJSON(),
+          comandoSorteioEncerrar.toJSON(), comandoSorteioStatus.toJSON(),
         ],
       });
-      console.log(`Comandos registrados com sucesso.`);
-    } catch (err) {
-      console.error('Falha ao registrar comandos:', err);
-    }
-  } else {
-    console.log(`Registro de comandos ignorado (DEPLOY_CMDS não está 'true').`);
+      console.log(`Comandos registrados.`);
+    } catch (err) { console.error('Falha ao registrar comandos:', err); }
   }
 
   console.log(`Online como ${c.user.tag}`);
 
+  // Checa se tem sorteio pendente para encerrar
   if (sorteio && !sorteio.sorteado && Date.now() >= sorteio.encerraEm) {
     sortearGanhador(c);
   }
-
   setInterval(() => {
-    if (sorteio && !sorteio.sorteado && Date.now() >= sorteio.encerraEm) {
-      sortearGanhador(c);
-    }
+    if (sorteio && !sorteio.sorteado && Date.now() >= sorteio.encerraEm) sortearGanhador(c);
   }, 60 * 1000);
+
+  // ---------- Inicialização do Ranking de Voz ----------
+  const guild = c.guilds.cache.get(cfg.guildId);
+  if (guild) {
+    // Computa as pessoas que já estão nas calls quando o bot inicia
+    guild.channels.cache.filter(ch => ch.isVoiceBased()).forEach(ch => {
+      if (ch.id === guild.afkChannelId) return;
+      ch.members.forEach(m => {
+        if (!m.user.bot) sessoesVoz[m.id] = Date.now();
+      });
+    });
+  }
+
+  atualizarRanking(c);
+  setInterval(() => atualizarRanking(c), 5 * 60 * 1000); // Atualiza o ranking a cada 5 minutos
+  setInterval(() => enviarBackupVoz(c), 15 * 60 * 1000); // Faz backup do Json de voz a cada 15 minutos
 });
 
-// ---------- Escalonamento (usado por /escalonar e /cheater) ----------
+// ---------- Evento de rastreio de Voz ----------
+client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+  const user = newState.member?.user;
+  if (!user || user.bot) return;
+
+  const isAfk = (state) => state.channelId === state.guild.afkChannelId;
+  const inValidCallOld = oldState.channelId && !isAfk(oldState);
+  const inValidCallNew = newState.channelId && !isAfk(newState);
+
+  // Entrou em call válida
+  if (!inValidCallOld && inValidCallNew) {
+    sessoesVoz[user.id] = Date.now();
+  } 
+  // Saiu da call ou foi pro AFK
+  else if (inValidCallOld && !inValidCallNew) {
+    if (sessoesVoz[user.id]) {
+      adicionarTempoVoz(user.id, Date.now() - sessoesVoz[user.id]);
+      delete sessoesVoz[user.id];
+    }
+  }
+});
+
+// ---------- Escalonamento e Comandos ----------
 async function escalar(i, { tipo, motivo, jogador, evidencia }) {
   const alerta = tipo === 'cheater';
   const negar = (descricao, titulo = 'Não foi possível concluir') =>
     i.reply({ embeds: [aviso(COR.erro, titulo, descricao)], flags: EPH });
   const ch = i.channel;
-
   const noAtendimento = ch?.parentId === cfg.catAtendimento;
   const jaEscalado = ch?.parentId === cfg.catEscalonado;
 
   if (ch?.type !== ChannelType.GuildText || !(noAtendimento || (alerta && jaEscalado))) {
-    return negar(
-      alerta
-        ? 'Este comando só funciona dentro de um ticket.'
-        : 'Este comando só funciona dentro de um ticket da categoria de atendimento.',
-    );
+    return negar(alerta ? 'Comando só funciona dentro de ticket.' : 'Só funciona em ticket de atendimento.');
   }
 
   const permitidos = [...cfg.cargosAtendimento, cfg.cargoAdm];
-  if (
-    !i.member.permissions.has('Administrator') &&
-    !i.member.roles.cache.some((r) => permitidos.includes(r.id))
-  ) {
-    return negar('Você não tem permissão para usar este comando.', 'Acesso negado');
+  if (!i.member.permissions.has('Administrator') && !i.member.roles.cache.some((r) => permitidos.includes(r.id))) {
+    return negar('Você não tem permissão.', 'Acesso negado');
   }
 
   await i.guild.channels.fetch();
   let destino = null;
   if (noAtendimento) {
     destino = i.guild.channels.cache.get(cfg.catEscalonado);
-    if (!destino || destino.type !== ChannelType.GuildCategory) {
-      return negar('Categoria de escalonados não encontrada. Avise um ADM.');
-    }
-    if (destino.children.cache.size >= 50) {
-      return negar('A categoria de escalonados está cheia (limite de 50 canais do Discord).');
-    }
+    if (!destino) return negar('Categoria de escalonados não encontrada.');
+    if (destino.children.cache.size >= 50) return negar('A categoria de escalonados está cheia.');
   }
 
   await i.deferReply({ flags: EPH });
 
   try {
     if (noAtendimento) {
-      await ch.setParent(destino, {
-        lockPermissions: false,
-        reason: `${alerta ? 'Suspeita de cheater' : 'Escalonado'} por ${i.user.tag}`,
-      });
-
-      await ch.permissionOverwrites.edit(cfg.cargoAdm, {
-        ViewChannel: true,
-        SendMessages: true,
-        ReadMessageHistory: true,
-        AttachFiles: true,
-      });
-
+      await ch.setParent(destino, { lockPermissions: false, reason: `${alerta ? 'Suspeita de cheater' : 'Escalonado'}` });
+      await ch.permissionOverwrites.edit(cfg.cargoAdm, { ViewChannel: true, SendMessages: true, ReadMessageHistory: true, AttachFiles: true });
       if (cfg.revogar) {
-        for (const id of cfg.cargosAtendimento) {
-          await ch.permissionOverwrites.edit(id, { ViewChannel: false });
-        }
+        for (const id of cfg.cargosAtendimento) await ch.permissionOverwrites.edit(id, { ViewChannel: false });
       }
     }
 
-    let embed;
-    let conteudo;
+    let embed; let conteudo;
     if (alerta) {
-      embed = new EmbedBuilder()
-        .setColor(COR.alerta)
-        .setAuthor(autor(i, 'Sinalizado por'))
-        .setTitle('🚨 Suspeita de cheater')
-        .setDescription(
-          'Suspeita de cheater sinalizada neste ticket. Requer atenção prioritária da administração.',
-        )
-        .addFields(
-          { name: 'Jogador suspeito', value: `**${jogador}**`, inline: true },
-          { name: 'Prioridade', value: 'Alta', inline: true },
-          { name: 'Status', value: 'Suspeita — aguardando verificação', inline: true },
-          { name: 'Motivo da suspeita', value: citar(motivo) },
-        )
-        .setFooter({ text: RODAPE })
-        .setTimestamp();
+      embed = new EmbedBuilder().setColor(COR.alerta).setAuthor(autor(i, 'Sinalizado por')).setTitle('🚨 Suspeita de cheater').setDescription('Suspeita sinalizada. Atenção prioritária.')
+        .addFields({ name: 'Jogador suspeito', value: `**${jogador}**`, inline: true }, { name: 'Status', value: 'Aguardando verificação', inline: true }, { name: 'Motivo', value: citar(motivo) });
       if (evidencia) embed.addFields({ name: 'Evidências', value: evidencia });
-      conteudo = `<@&${cfg.cargoAdm}> 🚨 **ALERTA:** suspeita de cheater sinalizada neste ticket.`;
+      conteudo = `<@&${cfg.cargoAdm}> 🚨 **ALERTA:** suspeita de cheater.`;
     } else {
-      embed = new EmbedBuilder()
-        .setColor(COR.escalonado)
-        .setAuthor(autor(i, 'Escalonado por'))
-        .setTitle('Ticket escalonado')
-        .setDescription('Este atendimento foi encaminhado à administração para análise.')
-        .addFields(
-          { name: 'Motivo', value: citar(motivo) },
-          { name: 'Status', value: 'Aguardando administração', inline: true },
-        )
-        .setFooter({ text: RODAPE })
-        .setTimestamp();
-      conteudo = `<@&${cfg.cargoAdm}> novo ticket escalonado aguardando análise.`;
+      embed = new EmbedBuilder().setColor(COR.escalonado).setAuthor(autor(i, 'Escalonado por')).setTitle('Ticket escalonado').addFields({ name: 'Motivo', value: citar(motivo) });
+      conteudo = `<@&${cfg.cargoAdm}> novo ticket escalonado.`;
     }
 
-    await ch.send({
-      content: conteudo,
-      embeds: [embed],
-      allowedMentions: { roles: [cfg.cargoAdm] },
-    });
+    await ch.send({ content: conteudo, embeds: [embed], allowedMentions: { roles: [cfg.cargoAdm] } });
 
     if (alerta && cfg.alertaChannel) {
       await enviarEm(i.guild, cfg.alertaChannel, {
-        content: `<@&${cfg.cargoAdm}> 🚨 suspeita de cheater — ticket: ${ch}`,
-        embeds: [EmbedBuilder.from(embed).addFields({ name: 'Ticket', value: `${ch}`, inline: true })],
+        content: `<@&${cfg.cargoAdm}> 🚨 cheater ticket: ${ch}`,
+        embeds: [EmbedBuilder.from(embed).addFields({ name: 'Ticket', value: `${ch}` })],
         allowedMentions: { roles: [cfg.cargoAdm] },
       });
     }
 
-    const log = new EmbedBuilder()
-      .setColor(alerta ? COR.alerta : COR.escalonado)
-      .setTitle(alerta ? 'Registro • Suspeita de cheater' : 'Registro • Escalonamento')
-      .addFields(
-        { name: 'Ticket', value: `${ch}\n\`#${ch.name}\``, inline: true },
-        { name: 'Responsável', value: `${i.user}`, inline: true },
-      )
-      .setFooter({ text: RODAPE })
-      .setTimestamp();
-    if (alerta) log.addFields({ name: 'Jogador suspeito', value: jogador, inline: true });
-    log.addFields({ name: 'Motivo', value: citar(motivo) });
-    if (alerta && evidencia) log.addFields({ name: 'Evidências', value: evidencia });
-    await enviarEm(i.guild, cfg.logChannel, { embeds: [log] });
-
-    await i.editReply({
-      embeds: [
-        aviso(
-          COR.ok,
-          alerta ? 'Alerta enviado' : 'Ticket escalonado',
-          alerta
-            ? 'A administração foi notificada sobre a suspeita de cheater.'
-            : 'O ticket foi encaminhado à administração.',
-        ),
-      ],
-    });
+    await i.editReply({ embeds: [aviso(COR.ok, alerta ? 'Alerta enviado' : 'Ticket escalonado', 'A administração foi notificada.')] });
   } catch (err) {
-    console.error(`Erro ao ${alerta ? 'sinalizar cheater' : 'escalonar'}:`, err);
-    await i.editReply({
-      embeds: [
-        aviso(
-          COR.erro,
-          alerta ? 'Falha ao sinalizar' : 'Falha ao escalonar',
-          'Verifique as permissões do bot nas duas categorias.',
-        ),
-      ],
-    });
+    console.error('Erro ao escalonar/cheater:', err);
+    await i.editReply({ embeds: [aviso(COR.erro, 'Falha ao processar', 'Verifique as permissões do bot nas categorias.')] });
   }
 }
 
 client.on(Events.InteractionCreate, async (i) => {
   if (!i.isChatInputCommand()) return;
-  if (i.commandName === 'escalonar') {
-    return escalar(i, { tipo: 'escalonar', motivo: i.options.getString('motivo', true) });
-  }
-  if (i.commandName === 'cheater') {
-    return escalar(i, {
-      tipo: 'cheater',
-      jogador: i.options.getString('jogador', true),
-      motivo: i.options.getString('motivo', true),
-      evidencia: i.options.getString('evidencia'),
-    });
-  }
+  if (i.commandName === 'escalonar') return escalar(i, { tipo: 'escalonar', motivo: i.options.getString('motivo', true) });
+  if (i.commandName === 'cheater') return escalar(i, { tipo: 'cheater', jogador: i.options.getString('jogador', true), motivo: i.options.getString('motivo', true), evidencia: i.options.getString('evidencia') });
 });
 
-// ---------- /devolver ----------
+// ---------- Outros Comandos (/devolver, etc) ----------
 client.on(Events.InteractionCreate, async (i) => {
-  if (!i.isChatInputCommand() || i.commandName !== 'devolver') return;
+  if (!i.isChatInputCommand()) return;
 
-  const negar = (descricao, titulo = 'Não foi possível concluir') =>
-    i.reply({ embeds: [aviso(COR.erro, titulo, descricao)], flags: EPH });
-  const ch = i.channel;
+  const negar = (descricao, titulo = 'Não foi possível concluir') => i.reply({ embeds: [aviso(COR.erro, titulo, descricao)], flags: EPH });
+  const isAdmin = i.member.permissions.has('Administrator') || i.member.roles.cache.has(cfg.cargoAdm);
 
-  if (!i.member.permissions.has('Administrator') && !i.member.roles.cache.has(cfg.cargoAdm)) {
-    return negar('Só a administração pode devolver tickets.', 'Acesso negado');
+  if (i.commandName === 'devolver') {
+    if (!isAdmin) return negar('Só a administração pode devolver tickets.', 'Acesso negado');
+    if (i.channel?.parentId !== cfg.catEscalonado) return negar('Use em um ticket escalonado.');
+    
+    await i.deferReply({ flags: EPH });
+    try {
+      const destino = i.guild.channels.cache.get(cfg.catAtendimento);
+      await i.channel.setParent(destino, { lockPermissions: false });
+      for (const id of cfg.cargosAtendimento) await i.channel.permissionOverwrites.edit(id, { ViewChannel: true, SendMessages: true });
+      await i.channel.send(`Ticket devolvido ao atendimento. Motivo: ${i.options.getString('motivo', true)}`);
+      await i.editReply({ embeds: [aviso(COR.ok, 'Ticket devolvido', 'Voltou para a categoria de atendimento.')] });
+    } catch (err) { await i.editReply({ embeds: [aviso(COR.erro, 'Falha', 'Erro ao mover canal.')] }); }
   }
 
-  if (ch?.type !== ChannelType.GuildText || ch.parentId !== cfg.catEscalonado) {
-    return negar('Este comando só funciona dentro de um ticket da categoria de escalonados.');
-  }
+  if (i.commandName === 'sorteiovipkabum') {
+    if (!isAdmin) return negar('Só a administração pode usar.', 'Acesso negado');
+    if (sorteio && !sorteio.sorteado) return negar('Já existe um sorteio ativo.');
+    
+    const dias = i.options.getInteger('dias') ?? 3;
+    const encerraEm = Date.now() + dias * 24 * 60 * 60 * 1000;
+    const tsSegundos = Math.floor(encerraEm / 1000);
 
-  await i.guild.channels.fetch();
-  const destino = i.guild.channels.cache.get(cfg.catAtendimento);
-  if (!destino || destino.type !== ChannelType.GuildCategory) {
-    return negar('Categoria de atendimento não encontrada. Confira o .env.');
-  }
-  if (destino.children.cache.size >= 50) {
-    return negar('A categoria de atendimento está cheia (limite de 50 canais do Discord).');
-  }
+    const embed = new EmbedBuilder().setColor(COR.sorteio).setTitle('🎉 SORTEIO VIP KABUM 🎉')
+      .setDescription('Sorteando R$500,00 em vale-presente Kabum.')
+      .addFields({ name: 'Encerramento', value: `<t:${tsSegundos}:F> (<t:${tsSegundos}:R>)` });
 
-  await i.deferReply({ flags: EPH });
-  const motivo = i.options.getString('motivo', true);
-
-  try {
-    await ch.setParent(destino, {
-      lockPermissions: false,
-      reason: `Devolvido por ${i.user.tag}`,
-    });
-
-    for (const id of cfg.cargosAtendimento) {
-      await ch.permissionOverwrites.edit(id, {
-        ViewChannel: true,
-        SendMessages: true,
-        ReadMessageHistory: true,
-      });
-    }
-
-    const embed = new EmbedBuilder()
-      .setColor(COR.devolvido)
-      .setAuthor(autor(i, 'Devolvido por'))
-      .setTitle('Ticket devolvido ao atendimento')
-      .setDescription('A administração devolveu este ticket para continuidade do atendimento.')
-      .addFields(
-        { name: 'Motivo', value: citar(motivo) },
-        { name: 'Status', value: 'Em atendimento', inline: true },
-      )
-      .setFooter({ text: RODAPE })
-      .setTimestamp();
-
-    const mencoes = cfg.cargosAtendimento.map((id) => `<@&${id}>`).join(' ');
-    await ch.send({
-      content: `${mencoes} ticket devolvido ao atendimento.`.trim(),
-      embeds: [embed],
-      allowedMentions: { roles: cfg.cargosAtendimento },
-    });
-
-    await enviarEm(i.guild, cfg.logChannel, {
-      embeds: [
-        new EmbedBuilder()
-          .setColor(COR.devolvido)
-          .setTitle('Registro • Devolução')
-          .addFields(
-            { name: 'Ticket', value: `${ch}\n\`#${ch.name}\``, inline: true },
-            { name: 'Responsável', value: `${i.user}`, inline: true },
-            { name: 'Motivo', value: citar(motivo) },
-          )
-          .setFooter({ text: RODAPE })
-          .setTimestamp(),
-      ],
-    });
-
-    await i.editReply({
-      embeds: [aviso(COR.ok, 'Ticket devolvido', 'O ticket voltou para a categoria de atendimento.')],
-    });
-  } catch (err) {
-    console.error('Erro ao devolver:', err);
-    await i.editReply({
-      embeds: [
-        aviso(COR.erro, 'Falha ao devolver', 'Verifique as permissões do bot nas duas categorias.'),
-      ],
-    });
-  }
-});
-
-// ---------- /sorteiovipkabum ----------
-client.on(Events.InteractionCreate, async (i) => {
-  if (!i.isChatInputCommand() || i.commandName !== 'sorteiovipkabum') return;
-
-  const negar = (descricao, titulo = 'Não foi possível concluir') =>
-    i.reply({ embeds: [aviso(COR.erro, titulo, descricao)], flags: EPH });
-
-  if (!i.member.permissions.has('Administrator') && !i.member.roles.cache.has(cfg.cargoAdm)) {
-    return negar('Só a administração pode usar este comando.', 'Acesso negado');
-  }
-  if (sorteio && !sorteio.sorteado) {
-    return negar(
-      'Já existe um sorteio em andamento. Use /sorteio-encerrar para finalizá-lo antes de abrir outro.',
-    );
-  }
-
-  const dias = i.options.getInteger('dias') ?? 3;
-  const encerraEm = Date.now() + dias * 24 * 60 * 60 * 1000;
-  const tsSegundos = Math.floor(encerraEm / 1000);
-
-  const embedSorteio = new EmbedBuilder()
-    .setColor(COR.sorteio)
-    .setTitle('🎉 SORTEIO VIP • R$500 EM VALE-PRESENTE KABUM! 🎉')
-    .setDescription(
-      '**Chegou a sua chance de turbinar o setup de graça!**\n\n' +
-        'A Caveiras está sorteando **R$500,00 em vale-presente da Kabum** para um membro da nossa comunidade. ' +
-        'Pode ser aquele periférico novo, upgrade na máquina ou o que você quiser — o prêmio é todo seu!',
-    )
-    .addFields(
-      { name: '💰 Prêmio', value: 'R$500,00 em vale-presente Kabum', inline: true },
-      { name: '🍀 Quem pode participar', value: 'Membros da Caveiras com cargo liberado', inline: true },
-      {
-        name: '📋 Como participar',
-        value: citar('Clique no botão **🎟️ Participar** abaixo. É só isso!'),
-      },
-      { name: '⏰ Encerramento', value: `<t:${tsSegundos}:F> (<t:${tsSegundos}:R>)` },
-      { name: '🔥 Dica', value: 'Convide seus amigos para o servidor — quanto mais gente, mais animado fica!' },
-    )
-    .setImage('attachment://sorteio-kabum.jpeg')
-    .setFooter({ text: RODAPE })
-    .setTimestamp();
-
-  try {
-    const imagem = new AttachmentBuilder(
-      path.join(__dirname, 'assets', 'sorteio-kabum.jpeg'),
-      { name: 'sorteio-kabum.jpeg' },
-    );
-    const msg = await i.channel.send({
-      content: '@everyone 🎉 **SORTEIO VIP KABUM** está no ar! Não fique de fora! 🎉',
-      embeds: [embedSorteio],
-      files: [imagem],
-      components: [linhaBotaoSorteio()],
-      allowedMentions: { parse: ['everyone'] },
-    });
-
-    sorteio = {
-      messageId: msg.id,
-      channelId: msg.channelId,
-      participantes: [],
-      encerraEm,
-      sorteado: false,
-    };
+    const msg = await i.channel.send({ content: '@everyone 🎉', embeds: [embed], components: [linhaBotaoSorteio()], allowedMentions: { parse: ['everyone'] } });
+    sorteio = { messageId: msg.id, channelId: msg.channelId, participantes: [], encerraEm, sorteado: false };
     salvarSorteio(sorteio);
+    await i.reply({ content: 'Sorteio publicado.', flags: EPH });
+  }
 
-    await i.reply({
-      embeds: [
-        aviso(
-          COR.ok,
-          'Sorteio publicado',
-          `O anúncio foi postado neste canal e encerra em ${dias} dia(s).`,
-        ),
-      ],
-      flags: EPH,
-    });
-  } catch (err) {
-    console.error('Erro ao postar sorteio:', err);
-    await negar('Verifique as permissões do bot neste canal.', 'Falha ao publicar');
+  if (i.commandName === 'sorteio-encerrar') {
+    if (!isAdmin) return negar('Sem permissão.');
+    await i.reply({ content: 'Encerrando...', flags: EPH });
+    sortearGanhador(i.client);
+  }
+
+  if (i.commandName === 'sorteio-status') {
+    if (!isAdmin) return negar('Sem permissão.');
+    if (!sorteio) return negar('Sem sorteios.');
+    await i.reply({ content: `Participantes: ${sorteio.participantes.length}`, flags: EPH });
+  }
+
+  if (i.commandName === 'cargos-painel') {
+    if (!isAdmin) return negar('Sem permissão.');
+    await i.channel.send({ embeds: [aviso(COR.ok, '🎟️ Escolha seus cargos', 'Clique nos botões.')], components: linhasBotoesCargos() });
+    await i.reply({ content: 'Painel enviado.', flags: EPH });
   }
 });
 
-// ---------- Botão "Participar" do sorteio ----------
+// ---------- Interações em Botões ----------
 client.on(Events.InteractionCreate, async (i) => {
-  if (!i.isButton() || i.customId !== PREFIXO_BOTAO_SORTEIO) return;
+  if (!i.isButton()) return;
 
-  const podeParticipar =
-    i.member?.roles?.cache?.some(
-      (r) => CARGOS_PODEM_PARTICIPAR.includes(r.id) || r.id === cfg.cargoAdm,
-    ) ?? false;
-  if (!podeParticipar) {
-    return i.reply({
-      content: '🚫 Só membros com cargo liberado (Membro Efetivo, Recruta, Moderador, ADM, Recrutador ou Dev) podem participar deste sorteio.',
-      flags: EPH,
-    });
-  }
-
-  if (!sorteio || sorteio.sorteado) {
-    return i.reply({ content: 'Não há nenhum sorteio ativo no momento.', flags: EPH });
-  }
-  if (Date.now() >= sorteio.encerraEm) {
-    return i.reply({ content: 'As inscrições já encerraram. Aguarde o resultado!', flags: EPH });
-  }
-  if (sorteio.participantes.includes(i.user.id)) {
-    return i.reply({ content: '✅ Você já está participando! Boa sorte 🍀', flags: EPH });
-  }
-
-  sorteio.participantes.push(i.user.id);
-  salvarSorteio(sorteio);
-
-  console.log(
-    `[sorteio] +1 participante: ${i.user.tag} (${i.user.id}) — total agora: ${sorteio.participantes.length}`,
-  );
-
-  await i.reply({
-    content: `✅ Você está participando do **Sorteio VIP Kabum**! Boa sorte 🍀 (${sorteio.participantes.length} participante(s) até agora)`,
-    flags: EPH,
-  });
-});
-
-// ---------- /sorteio-status ----------
-client.on(Events.InteractionCreate, async (i) => {
-  if (!i.isChatInputCommand() || i.commandName !== 'sorteio-status') return;
-
-  const negar = (descricao, titulo = 'Não foi possível concluir') =>
-    i.reply({ embeds: [aviso(COR.erro, titulo, descricao)], flags: EPH });
-
-  if (!i.member.permissions.has('Administrator') && !i.member.roles.cache.has(cfg.cargoAdm)) {
-    return negar('Só a administração pode usar este comando.', 'Acesso negado');
-  }
-  if (!sorteio) {
-    return negar('Nenhum sorteio foi iniciado ainda.');
-  }
-
-  const listaSorteio =
-    sorteio.participantes.length > 0
-      ? sorteio.participantes.map((id, idx) => `${idx + 1}. <@${id}> (\`${id}\`)`).join('\n')
-      : '_Ninguém participou ainda._';
-
-  const tsSegundos = Math.floor(sorteio.encerraEm / 1000);
-
-  await i.reply({
-    embeds: [
-      new EmbedBuilder()
-        .setColor(COR.sorteio)
-        .setTitle('🎟️ Status do sorteio')
-        .addFields(
-          { name: 'Status', value: sorteio.sorteado ? 'Encerrado' : 'Em andamento', inline: true },
-          { name: 'Total de participantes', value: `${sorteio.participantes.length}`, inline: true },
-          { name: 'Encerramento', value: `<t:${tsSegundos}:F> (<t:${tsSegundos}:R>)` },
-          { name: 'Participantes', value: listaSorteio.slice(0, 1024) },
-        )
-        .setFooter({ text: RODAPE })
-        .setTimestamp(),
-    ],
-    flags: EPH,
-  });
-});
-
-// ---------- /sorteio-encerrar ----------
-client.on(Events.InteractionCreate, async (i) => {
-  if (!i.isChatInputCommand() || i.commandName !== 'sorteio-encerrar') return;
-
-  const negar = (descricao, titulo = 'Não foi possível concluir') =>
-    i.reply({ embeds: [aviso(COR.erro, titulo, descricao)], flags: EPH });
-
-  if (!i.member.permissions.has('Administrator') && !i.member.roles.cache.has(cfg.cargoAdm)) {
-    return negar('Só a administração pode usar este comando.', 'Acesso negado');
-  }
-  if (!sorteio || sorteio.sorteado) {
-    return negar('Não há nenhum sorteio ativo no momento.');
-  }
-
-  await i.reply({
-    embeds: [aviso(COR.ok, 'Encerrando sorteio', 'O resultado será anunciado no canal do sorteio.')],
-    flags: EPH,
-  });
-  await sortearGanhador(i.client);
-});
-
-// ---------- /cargos-painel ----------
-client.on(Events.InteractionCreate, async (i) => {
-  if (!i.isChatInputCommand() || i.commandName !== 'cargos-painel') return;
-
-  const negar = (descricao, titulo = 'Não foi possível concluir') =>
-    i.reply({ embeds: [aviso(COR.erro, titulo, descricao)], flags: EPH });
-
-  if (!i.member.permissions.has('Administrator') && !i.member.roles.cache.has(cfg.cargoAdm)) {
-    return negar('Só a administração pode usar este comando.', 'Acesso negado');
-  }
-
-  const embedPainel = new EmbedBuilder()
-    .setColor(COR.ok)
-    .setTitle('🎟️ Escolha seus cargos')
-    .setDescription(
-      'Clique nos botões abaixo para pegar ou remover um cargo. Use para liberar acesso aos canais e marcações de eventos, jogos e divisões.',
-    )
-    .addFields({
-      name: 'Cargos disponíveis',
-      value: CARGOS_PAINEL.map((c) => `• ${c.label}`).join('\n'),
-    })
-    .setFooter({ text: RODAPE })
-    .setTimestamp();
-
-  try {
-    await i.channel.send({ embeds: [embedPainel], components: linhasBotoesCargos() });
-    await i.reply({
-      embeds: [aviso(COR.ok, 'Painel publicado', 'O painel de cargos foi postado neste canal.')],
-      flags: EPH,
-    });
-  } catch (err) {
-    console.error('Erro ao postar painel de cargos:', err);
-    await negar('Verifique as permissões do bot neste canal.', 'Falha ao publicar');
-  }
-});
-
-// ---------- Botões de cargo ----------
-client.on(Events.InteractionCreate, async (i) => {
-  if (!i.isButton() || !i.customId.startsWith(PREFIXO_BOTAO_CARGO)) return;
-
-  const cargoId = i.customId.slice(PREFIXO_BOTAO_CARGO.length);
-  const cargo = CARGOS_PAINEL.find((c) => c.id === cargoId);
-  if (!cargo) return i.reply({ content: 'Cargo não reconhecido.', flags: EPH });
-
-  try {
-    const tem = i.member.roles.cache.has(cargoId);
-    if (tem) {
-      await i.member.roles.remove(cargoId, 'Autosserviço: botão de cargos');
-      await i.reply({ content: `➖ Cargo **${cargo.label}** removido.`, flags: EPH });
-    } else {
-      await i.member.roles.add(cargoId, 'Autosserviço: botão de cargos');
-      await i.reply({ content: `✅ Cargo **${cargo.label}** adicionado.`, flags: EPH });
+  if (i.customId === PREFIXO_BOTAO_SORTEIO) {
+    if (!i.member.roles.cache.some(r => CARGOS_PODEM_PARTICIPAR.includes(r.id) || r.id === cfg.cargoAdm)) {
+      return i.reply({ content: '🚫 Você não possui cargo liberado para participar.', flags: EPH });
     }
-  } catch (err) {
-    console.error('Erro ao alternar cargo:', err);
-    await i.reply({
-      content: 'Não consegui alterar esse cargo. Avise um ADM (pode ser permissão do bot).',
-      flags: EPH,
-    });
+    if (!sorteio || sorteio.sorteado || Date.now() >= sorteio.encerraEm) return i.reply({ content: 'Sorteio encerrado.', flags: EPH });
+    if (sorteio.participantes.includes(i.user.id)) return i.reply({ content: '✅ Você já está participando!', flags: EPH });
+    
+    sorteio.participantes.push(i.user.id);
+    salvarSorteio(sorteio);
+    await i.reply({ content: `✅ Participando! (${sorteio.participantes.length} na lista)`, flags: EPH });
+  }
+
+  if (i.customId.startsWith(PREFIXO_BOTAO_CARGO)) {
+    const cargoId = i.customId.slice(PREFIXO_BOTAO_CARGO.length);
+    const cargo = CARGOS_PAINEL.find(c => c.id === cargoId);
+    if (!cargo) return;
+    try {
+      if (i.member.roles.cache.has(cargoId)) {
+        await i.member.roles.remove(cargoId);
+        await i.reply({ content: `➖ Cargo **${cargo.label}** removido.`, flags: EPH });
+      } else {
+        await i.member.roles.add(cargoId);
+        await i.reply({ content: `✅ Cargo **${cargo.label}** adicionado.`, flags: EPH });
+      }
+    } catch { await i.reply({ content: 'Falha ao alterar cargo.', flags: EPH }); }
   }
 });
 
-// ---------- /aviso-armadilha ----------
-client.on(Events.InteractionCreate, async (i) => {
-  if (!i.isChatInputCommand() || i.commandName !== 'aviso-armadilha') return;
-
-  const negar = (descricao, titulo = 'Não foi possível concluir') =>
-    i.reply({ embeds: [aviso(COR.erro, titulo, descricao)], flags: EPH });
-
-  if (!i.member.permissions.has('Administrator') && !i.member.roles.cache.has(cfg.cargoAdm)) {
-    return negar('Só a administração pode usar este comando.', 'Acesso negado');
-  }
-  if (!cfg.canalCastigo) {
-    return negar('CANAL_CASTIGO_ID não está configurado. Avise um ADM.');
-  }
-  if (i.channelId !== cfg.canalCastigo) {
-    return negar('Use este comando dentro do canal-armadilha.');
-  }
-
-  await i.deferReply({ flags: EPH });
-
-  const embedAviso = new EmbedBuilder()
-    .setColor(COR.alerta)
-    .setTitle('⚠️ Não envie mensagens neste canal')
-    .setDescription(
-      'Este canal é monitorado e **não deve receber mensagens**. Ele existe para identificar contas comprometidas (hackeadas) que enviam links maliciosos no servidor.',
-    )
-    .addFields(
-      {
-        name: 'O que acontece se alguém postar aqui',
-        value: 'A mensagem é apagada automaticamente e o autor recebe castigo (timeout) imediato.',
-      },
-      {
-        name: 'Minha conta foi punida por engano?',
-        value: 'Se sua conta foi hackeada e postou aqui sem sua ação, procure a administração em um ticket assim que recuperar o acesso.',
-      },
-    )
-    .setFooter({ text: RODAPE })
-    .setTimestamp();
-
-  try {
-    const msg = await i.channel.send({ embeds: [embedAviso] });
-    await msg.pin().catch(() => {});
-    await i.editReply({
-      embeds: [aviso(COR.ok, 'Aviso publicado', 'O aviso foi postado e fixado no canal-armadilha.')],
-    });
-  } catch (err) {
-    console.error('Erro ao postar aviso da armadilha:', err);
-    await i.editReply({
-      embeds: [aviso(COR.erro, 'Falha ao publicar', 'Verifique as permissões do bot neste canal.')],
-    });
-  }
-});
-
-// ---------- Canal-armadilha (contas hackeadas postando links) ----------
+// Armadilha
 if (cfg.canalCastigo) {
-  const MS_DIA = 24 * 60 * 60 * 1000;
-  const MAX_TIMEOUT = 28 * MS_DIA; // limite do Discord
-  const duracao = Math.min(cfg.castigoDias * MS_DIA, MAX_TIMEOUT);
-
   client.on(Events.MessageCreate, async (msg) => {
-    if (!msg.guild || msg.channelId !== cfg.canalCastigo) return;
-    if (msg.author.bot) return;
-
-    const membro = msg.member ?? (await msg.guild.members.fetch(msg.author.id).catch(() => null));
-    if (!membro) return;
-
-    if (membro.permissions.has('Administrator') || membro.roles.cache.has(cfg.cargoAdm)) return;
-
+    if (msg.channelId !== cfg.canalCastigo || msg.author.bot) return;
+    const membro = msg.member;
+    if (membro?.permissions.has('Administrator')) return;
     try {
       await msg.delete().catch(() => {});
-      await membro.timeout(
-        duracao,
-        `Mensagem em canal-armadilha (possível conta comprometida) — ${cfg.castigoDias}d`,
-      );
-
-      console.log(`[castigo] ${msg.author.tag} (${msg.author.id}) mutado por ${cfg.castigoDias}d — canal-armadilha`);
-
-      await enviarEm(msg.guild, cfg.castigoAlertaChannel, {
-        content: `<@&${cfg.cargoAdm}> 🚨 possível conta comprometida detectada no canal-armadilha.`,
-        embeds: [
-          new EmbedBuilder()
-            .setColor(COR.alerta)
-            .setTitle('🚨 Registro • Canal-armadilha')
-            .setDescription(
-              'Mensagem detectada no canal-armadilha. Possível conta comprometida enviando links maliciosos.',
-            )
-            .addFields(
-              { name: 'Usuário', value: `${msg.author} (\`${msg.author.id}\`)`, inline: true },
-              { name: 'Castigo aplicado', value: `${cfg.castigoDias} dia(s)`, inline: true },
-            )
-            .setFooter({ text: RODAPE })
-            .setTimestamp(),
-        ],
-        allowedMentions: { roles: [cfg.cargoAdm] },
-      });
-    } catch (err) {
-      console.error('Erro ao aplicar castigo no canal-armadilha:', err.message);
-    }
+      await membro.timeout(Math.min(cfg.castigoDias * 24 * 60 * 60 * 1000, 28 * 24 * 60 * 60 * 1000), 'Armadilha');
+    } catch {}
   });
 }
 
-// Servidor HTTP mínimo: só sobe onde há PORT definida (ex.: Web Service do Render)
-if (process.env.PORT) {
-  require('http')
-    .createServer((_, res) => {
-      res.writeHead(200);
-      res.end('ok');
-    })
-    .listen(process.env.PORT, () => console.log(`HTTP na porta ${process.env.PORT}`));
-}
-
-// Diagnóstico
-client.on(Events.Error, (e) => console.error('client error:', e));
-client.on(Events.ShardError, (e) => console.error('shard error:', e));
-client.on(Events.Warn, (m) => console.warn('warn:', m));
-if (process.env.DEBUG_DISCORD === 'true') client.on(Events.Debug, (m) => console.log('[debug]', m));
-process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
-
-console.log(`[diag] token com ${cfg.token.length} caracteres`);
-(async () => {
-  try {
-    const r = await fetch('https://discord.com/api/v10/users/@me', {
-      headers: { Authorization: `Bot ${cfg.token}` },
-    });
-    const corpo = (await r.text()).replace(/\s+/g, ' ').slice(0, 150);
-    console.log(`[diag] Discord API respondeu ${r.status}: ${corpo}`);
-  } catch (e) {
-    console.error('[diag] não alcançou a API do Discord:', e.message);
-  }
-})();
-const pendente = setTimeout(() => console.warn('[diag] login ainda pendente após 30s'), 30000);
-client.once(Events.ClientReady, () => clearTimeout(pendente));
+if (process.env.PORT) require('http').createServer((_, res) => { res.writeHead(200); res.end('ok'); }).listen(process.env.PORT);
 
 console.log('Conectando ao Discord...');
 client.login(cfg.token).catch((e) => console.error('Falha no login:', e));
