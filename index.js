@@ -1,4 +1,5 @@
 require('dotenv').config();
+const http = require('http'); // Servidor HTTP para o Render
 const {
   Client,
   GatewayIntentBits,
@@ -16,6 +17,15 @@ const {
 } = require('discord.js');
 const path = require('path');
 const fs = require('fs');
+
+// ---------- Servidor HTTP para satisfazer a checagem de porta do Render ----------
+const PORT = process.env.PORT || 10000;
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Bot Assistente Caveiras online!');
+}).listen(PORT, () => {
+  console.log(`[Render] Servidor Web ativo na porta ${PORT}`);
+});
 
 const env = process.env;
 const lista = (v = '') => v.split(',').map((s) => s.trim()).filter(Boolean);
@@ -43,25 +53,28 @@ const cfg = {
 };
 
 // =====================================================================
-// 🏆 CONFIGURAÇÃO VISUAL DO RANKING (EDITÁVEL)
-// Altere os emojis, nomes e formatos abaixo como preferir!
+// 🏆 CONFIGURAÇÃO VISUAL DO RANKING
 // =====================================================================
 const RANKING_CFG = {
   titulo: '🏆 Ranking de Tempo em Call da Caveiras',
-  corEmbed: 0x9333ea, // Cor da barrinha lateral
+  corEmbed: 0x9333ea,
   textoVazio: 'Nenhum tempo registrado ainda. Bora entrar em uma call!',
   
-  // Personalize o prefixo de cada posição do Top (pode colocar quantas posições quiser aqui)
   medalhas: [
-    '👑 **[REI DA CALL]**',   // 1º lugar
-    '🥈 **[VICIADO]**',       // 2º lugar
-    '🥉 **[BATE-PONTO]**',    // 3º lugar
-    '🏅 **4º Lugar**',        // 4º lugar
-    '🏅 **5º Lugar**'         // 5º lugar
+    '🥇 **[1º - Já pode pedir música no Fantástico]**',
+    '🥈 **[2º - A cama sente sua falta]**',
+    '🥉 **[3º - Banho é DLC?]**',
+    '🏅 **[4º - Viu a luz do sol recentemente?]**',
+    '🏅 **[5º - Possui vínculo empregatício com o Discord]**',
+    '🏅 **[6º - Já tem endereço fixo na call]**',
+    '🏅 **[7º - A call conhece mais você que sua família]**',
+    '🏅 **[8º - Seu Discord está preocupado com você]**',
+    '🏅 **[9º - Só sai quando acaba a internet]**',
+    '🏅 **[10º - Provavelmente está de cueca desde terça]**',
+    '🏅 **[11º - A cadeira já moldou seu corpo]**',
+    '🏅 **[12º - Entra na call antes de entrar no Windows]**'
   ],
   
-  // Como formatar quem ficar abaixo das medalhas configuradas acima.
-  // O "{pos}" será substituído pelo número da posição (ex: 6).
   posicaoPadrao: '**{pos}º**'
 };
 // =====================================================================
@@ -105,7 +118,7 @@ async function enviarEm(guild, canalId, payload) {
 const CARGOS_PAINEL = [
   { id: '1555231437651972201', label: '💣 Hell Let Loose' },
   { id: '1555231449907470506', label: '🐶 Wardogs' },
-  { id: '1555235580625944576', label: '🎖️ Premiações' },
+  { id: '1555235580625944576', label: '🎖️️ Premiações' },
   { id: '1555235317550948434', label: '🪖 Eventos' },
   { id: '1555235262018228295', label: '🎮 Casual' },
   { id: '1555235062918680668', label: '🏆 Competitivo' },
@@ -191,7 +204,6 @@ function getTemposAtuaisVoz() {
   return combinados;
 }
 
-// Mapeia todos que já estão em call quando o bot inicia
 async function mapearMembrosEmVoz(client) {
   const agora = Date.now();
   try {
@@ -225,21 +237,17 @@ async function enviarBackupVoz(client) {
     const canal = await client.channels.fetch(cfg.canalBackupVoz).catch(() => null);
     if (!canal) return;
 
-    // 1. Inclui o tempo ao vivo de quem está na call no backup
     const dadosParaBackup = getTemposAtuaisVoz();
 
-    // 2. Procura todas as mensagens de backup antigas enviadas pelo bot no canal para apagar
     const msgs = await canal.messages.fetch({ limit: 20 }).catch(() => null);
     const msgsAntigas = msgs ? msgs.filter(m => m.author.id === client.user.id && m.attachments.some(a => a.name === NOME_BACKUP_VOZ)) : null;
 
-    // 3. Envia o novo backup
     const msg = await canal.send({
       content: `🎙️ Backup Automático: Tempo de Voz (${Object.keys(dadosParaBackup).length} registros)`,
       files: [new AttachmentBuilder(Buffer.from(JSON.stringify(dadosParaBackup, null, 2)), { name: NOME_BACKUP_VOZ })]
     });
     backupVozMsgId = msg.id;
 
-    // 4. Limpa as mensagens antigas mantendo apenas a recém-enviada
     if (msgsAntigas && msgsAntigas.size > 0) {
       for (const [, m] of msgsAntigas) {
         if (m.id !== msg.id) await m.delete().catch(() => {});
@@ -290,7 +298,7 @@ async function atualizarRanking(client) {
     const dados = getTemposAtuaisVoz();
     const rank = Object.entries(dados)
       .sort((a, b) => b[1] - a[1])
-      .slice(0, 15); // Exibe o Top 15
+      .slice(0, 15);
 
     let textoRank = rank.length > 0
       ? rank.map(([id, ms], i) => {
@@ -480,7 +488,6 @@ client.once(Events.ClientReady, async (c) => {
     if (sorteio && !sorteio.sorteado && Date.now() >= sorteio.encerraEm) sortearGanhador(c);
   }, 15000);
 
-  // Backup e ranking rodando a cada 5 minutos
   setInterval(() => enviarBackupVoz(clientBackup), 5 * 60 * 1000);
   setInterval(() => atualizarRanking(clientBackup), 5 * 60 * 1000);
 });
