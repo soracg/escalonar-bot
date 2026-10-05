@@ -489,7 +489,7 @@ client.once(Events.ClientReady, async (c) => {
   }, 15000);
 
   setInterval(() => enviarBackupVoz(clientBackup), 5 * 60 * 1000);
-  setInterval(() => atualizarRanking(clientBackup), 5 * 60 * 1000);
+  setInterval(() => atualizarRanking(clientBackup), 2 * 60 * 1000);
 });
 
 // ---------- EVENTOS DE VOZ ----------
