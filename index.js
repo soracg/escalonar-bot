@@ -56,7 +56,7 @@ const cfg = {
 // 🏆 CONFIGURAÇÃO VISUAL DO RANKING
 // =====================================================================
 const RANKING_CFG = {
-  titulo: '🏆 Ranking de Tempo em Call da Caveiras',
+  titulo: '🏆 Ranking de Tempo em Call dos Caveiras',
   corEmbed: 0x9333ea,
   textoVazio: 'Nenhum tempo registrado ainda. Bora entrar em uma call!',
   
