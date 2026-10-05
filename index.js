@@ -35,6 +35,7 @@ const cfg = {
   castigoDias: Number(env.CASTIGO_DIAS ?? 7),
   castigoAlertaChannel: env.CASTIGO_ALERTA_CHANNEL_ID || null, // canal de avisos de castigo (spam/invasão)
   backupChannel: env.BACKUP_CHANNEL_ID || env.LOG_CHANNEL_ID || null, // canal (privado) onde o bot guarda o backup do sorteio
+  deployCmds: (env.DEPLOY_CMDS ?? 'false') === 'true', // Controle para evitar Rate Limits
 };
 
 for (const k of ['token', 'clientId', 'guildId', 'catAtendimento', 'catEscalonado', 'cargoAdm']) {
@@ -61,7 +62,7 @@ const aviso = (cor, titulo, descricao) =>
   new EmbedBuilder().setColor(cor).setTitle(titulo).setDescription(descricao);
 
 const autor = (i, prefixo) => ({
-  name: `${prefixo} ${i.member?.displayName ?? i.user.username}`,
+  name: `${prefixo}${i.member?.displayName ?? i.user.username}`,
   iconURL: i.user.displayAvatarURL(),
 });
 
@@ -172,6 +173,16 @@ const comandoSorteioStatus = new SlashCommandBuilder()
   .setDescription('Mostra quem está participando do sorteio ativo (só ADM)')
   .setDMPermission(false);
 
+const comandoCargosPainel = new SlashCommandBuilder()
+  .setName('cargos-painel')
+  .setDescription('Posta o painel de botões para os membros pegarem seus cargos (só ADM)')
+  .setDMPermission(false);
+
+const comandoAvisoArmadilha = new SlashCommandBuilder()
+  .setName('aviso-armadilha')
+  .setDescription('Posta e fixa o aviso explicando o canal-armadilha (só ADM)')
+  .setDMPermission(false);
+
 // ---------- Persistência simples do sorteio (sobrevive a reinícios) ----------
 const DADOS_SORTEIO = path.join(__dirname, 'data', 'sorteio.json');
 const PREFIXO_BOTAO_SORTEIO = 'sorteio_participar';
@@ -193,6 +204,7 @@ function carregarSorteio() {
     return null;
   }
 }
+
 function salvarSorteio(s) {
   try {
     fs.mkdirSync(path.dirname(DADOS_SORTEIO), { recursive: true });
@@ -202,11 +214,10 @@ function salvarSorteio(s) {
   }
   agendarBackup();
 }
+
 let sorteio = carregarSorteio(); // { messageId, channelId, participantes: [], encerraEm, sorteado }
 
 // ---------- Backup do sorteio em um canal do Discord ----------
-// O disco do Render (plano gratuito) é apagado a cada deploy/reinício. Por isso o estado do sorteio
-// também é guardado como arquivo JSON em um canal e restaurado quando o bot sobe.
 const NOME_BACKUP = 'sorteio-backup.json';
 let clientBackup = null;
 let backupTimer = null;
@@ -215,7 +226,6 @@ let filaBackup = Promise.resolve();
 
 function agendarBackup() {
   if (!clientBackup || !cfg.backupChannel || backupTimer) return;
-  // Junta várias participações seguidas em um único backup (evita rate limit)
   backupTimer = setTimeout(() => {
     backupTimer = null;
     filaBackup = filaBackup.then(enviarBackup).catch(() => {});
@@ -276,7 +286,6 @@ async function restaurarBackup(client) {
       gravarSorteioLocal(sorteio);
       console.log(`[backup] sorteio restaurado: ${sorteio.participantes.length} participante(s).`);
     } else if (sorteio.messageId === salvo.messageId) {
-      // Mesmo sorteio: junta o que houver nos dois lados
       sorteio.participantes = [...new Set([...sorteio.participantes, ...salvo.participantes])];
       sorteio.sorteado = Boolean(sorteio.sorteado || salvo.sorteado);
       gravarSorteioLocal(sorteio);
@@ -287,7 +296,6 @@ async function restaurarBackup(client) {
   }
 }
 
-// Sementes manuais (uso único): só vale se não existir sorteio local nem backup.
 function aplicarSementeSorteio() {
   if (sorteio || !env.SORTEIO_SEED) return;
   try {
@@ -309,7 +317,6 @@ function aplicarSementeSorteio() {
   }
 }
 
-// Ao desligar (deploy/reinício no Render), envia o backup pendente antes de sair
 async function finalizar() {
   setTimeout(() => process.exit(0), 10000).unref();
   if (backupTimer) {
@@ -320,6 +327,7 @@ async function finalizar() {
   await filaBackup;
   process.exit(0);
 }
+
 process.on('SIGTERM', finalizar);
 process.on('SIGINT', finalizar);
 
@@ -343,7 +351,6 @@ async function sortearGanhador(client) {
     const canal = await client.channels.fetch(sorteio.channelId).catch(() => null);
     if (!canal) return;
 
-    // Desativa o botão na mensagem original
     const msgOriginal = await canal.messages.fetch(sorteio.messageId).catch(() => null);
     if (msgOriginal) {
       await msgOriginal.edit({ components: [linhaBotaoSorteio(true)] }).catch(() => {});
@@ -363,8 +370,7 @@ async function sortearGanhador(client) {
       return;
     }
 
-    const ganhadorId =
-      sorteio.participantes[Math.floor(Math.random() * sorteio.participantes.length)];
+    const ganhadorId = sorteio.participantes[Math.floor(Math.random() * sorteio.participantes.length)];
 
     await canal.send({
       content: `🎉 <@${ganhadorId}> é o grande ganhador do **Sorteio VIP Kabum**! Parabéns! 🎉`,
@@ -385,16 +391,6 @@ async function sortearGanhador(client) {
   }
 }
 
-const comandoCargosPainel = new SlashCommandBuilder()
-  .setName('cargos-painel')
-  .setDescription('Posta o painel de botões para os membros pegarem seus cargos (só ADM)')
-  .setDMPermission(false);
-
-const comandoAvisoArmadilha = new SlashCommandBuilder()
-  .setName('aviso-armadilha')
-  .setDescription('Posta e fixa o aviso explicando o canal-armadilha (só ADM)')
-  .setDMPermission(false);
-
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
 });
@@ -404,29 +400,36 @@ client.once(Events.ClientReady, async (c) => {
   await restaurarBackup(c);
   aplicarSementeSorteio();
 
-  const rest = new REST().setToken(cfg.token);
-  await rest.put(Routes.applicationGuildCommands(cfg.clientId, cfg.guildId), {
-    body: [
-      comandoEscalonar.toJSON(),
-      comandoCheater.toJSON(),
-      comandoDevolver.toJSON(),
-      comandoAvisoArmadilha.toJSON(),
-      comandoCargosPainel.toJSON(),
-      comandoSorteioKabum.toJSON(),
-      comandoSorteioEncerrar.toJSON(),
-      comandoSorteioStatus.toJSON(),
-    ],
-  });
-  console.log(
-    `Online como ${c.user.tag} — comandos registrados (escalonar, cheater, devolver, aviso-armadilha, cargos-painel, sorteiovipkabum, sorteio-encerrar, sorteio-status).`,
-  );
+  // Proteção contra Rate Limits na atualização de comandos
+  if (cfg.deployCmds) {
+    try {
+      const rest = new REST().setToken(cfg.token);
+      await rest.put(Routes.applicationGuildCommands(cfg.clientId, cfg.guildId), {
+        body: [
+          comandoEscalonar.toJSON(),
+          comandoCheater.toJSON(),
+          comandoDevolver.toJSON(),
+          comandoAvisoArmadilha.toJSON(),
+          comandoCargosPainel.toJSON(),
+          comandoSorteioKabum.toJSON(),
+          comandoSorteioEncerrar.toJSON(),
+          comandoSorteioStatus.toJSON(),
+        ],
+      });
+      console.log(`Comandos registrados com sucesso.`);
+    } catch (err) {
+      console.error('Falha ao registrar comandos:', err);
+    }
+  } else {
+    console.log(`Registro de comandos ignorado (DEPLOY_CMDS não está 'true').`);
+  }
 
-  // Ao iniciar: se já havia um sorteio salvo e o prazo passou enquanto o bot estava offline, sorteia agora.
+  console.log(`Online como ${c.user.tag}`);
+
   if (sorteio && !sorteio.sorteado && Date.now() >= sorteio.encerraEm) {
     sortearGanhador(c);
   }
 
-  // Verifica a cada minuto se algum sorteio ativo já venceu o prazo
   setInterval(() => {
     if (sorteio && !sorteio.sorteado && Date.now() >= sorteio.encerraEm) {
       sortearGanhador(c);
@@ -444,7 +447,6 @@ async function escalar(i, { tipo, motivo, jogador, evidencia }) {
   const noAtendimento = ch?.parentId === cfg.catAtendimento;
   const jaEscalado = ch?.parentId === cfg.catEscalonado;
 
-  // 1) Precisa ser um ticket (o /cheater também vale em ticket já escalonado)
   if (ch?.type !== ChannelType.GuildText || !(noAtendimento || (alerta && jaEscalado))) {
     return negar(
       alerta
@@ -453,19 +455,14 @@ async function escalar(i, { tipo, motivo, jogador, evidencia }) {
     );
   }
 
-  // 2) Só Recrutador/Moderador/ADM
   const permitidos = [...cfg.cargosAtendimento, cfg.cargoAdm];
   if (
     !i.member.permissions.has('Administrator') &&
     !i.member.roles.cache.some((r) => permitidos.includes(r.id))
   ) {
-    console.log(
-      `[perm] negado para ${i.user.tag} | cargos do usuário: ${[...i.member.roles.cache.keys()].join(',')} | permitidos: ${permitidos.join(',')}`,
-    );
     return negar('Você não tem permissão para usar este comando.', 'Acesso negado');
   }
 
-  // 3) Categoria de destino (só quando o ticket ainda está no atendimento)
   await i.guild.channels.fetch();
   let destino = null;
   if (noAtendimento) {
@@ -482,13 +479,11 @@ async function escalar(i, { tipo, motivo, jogador, evidencia }) {
 
   try {
     if (noAtendimento) {
-      // Move sem sincronizar (preserva o acesso de quem abriu o ticket)
       await ch.setParent(destino, {
         lockPermissions: false,
         reason: `${alerta ? 'Suspeita de cheater' : 'Escalonado'} por ${i.user.tag}`,
       });
 
-      // ADM passa a ver e responder
       await ch.permissionOverwrites.edit(cfg.cargoAdm, {
         ViewChannel: true,
         SendMessages: true,
@@ -496,7 +491,6 @@ async function escalar(i, { tipo, motivo, jogador, evidencia }) {
         AttachFiles: true,
       });
 
-      // Atendimento perde acesso (se REVOGAR_ACESSO_ATENDIMENTO=true)
       if (cfg.revogar) {
         for (const id of cfg.cargosAtendimento) {
           await ch.permissionOverwrites.edit(id, { ViewChannel: false });
@@ -504,7 +498,6 @@ async function escalar(i, { tipo, motivo, jogador, evidencia }) {
       }
     }
 
-    // ---- Mensagem no ticket ----
     let embed;
     let conteudo;
     if (alerta) {
@@ -546,7 +539,6 @@ async function escalar(i, { tipo, motivo, jogador, evidencia }) {
       allowedMentions: { roles: [cfg.cargoAdm] },
     });
 
-    // ---- Alerta no canal dedicado (só /cheater, se configurado) ----
     if (alerta && cfg.alertaChannel) {
       await enviarEm(i.guild, cfg.alertaChannel, {
         content: `<@&${cfg.cargoAdm}> 🚨 suspeita de cheater — ticket: ${ch}`,
@@ -555,7 +547,6 @@ async function escalar(i, { tipo, motivo, jogador, evidencia }) {
       });
     }
 
-    // ---- Registro ----
     const log = new EmbedBuilder()
       .setColor(alerta ? COR.alerta : COR.escalonado)
       .setTitle(alerta ? 'Registro • Suspeita de cheater' : 'Registro • Escalonamento')
@@ -618,17 +609,14 @@ client.on(Events.InteractionCreate, async (i) => {
     i.reply({ embeds: [aviso(COR.erro, titulo, descricao)], flags: EPH });
   const ch = i.channel;
 
-  // 1) Só ADM
   if (!i.member.permissions.has('Administrator') && !i.member.roles.cache.has(cfg.cargoAdm)) {
     return negar('Só a administração pode devolver tickets.', 'Acesso negado');
   }
 
-  // 2) Precisa estar na categoria de escalonados
   if (ch?.type !== ChannelType.GuildText || ch.parentId !== cfg.catEscalonado) {
     return negar('Este comando só funciona dentro de um ticket da categoria de escalonados.');
   }
 
-  // 3) Categoria de destino (atendimento)
   await i.guild.channels.fetch();
   const destino = i.guild.channels.cache.get(cfg.catAtendimento);
   if (!destino || destino.type !== ChannelType.GuildCategory) {
@@ -647,7 +635,6 @@ client.on(Events.InteractionCreate, async (i) => {
       reason: `Devolvido por ${i.user.tag}`,
     });
 
-    // Recrutador/Moderador voltam a ver e responder
     for (const id of cfg.cargosAtendimento) {
       await ch.permissionOverwrites.edit(id, {
         ViewChannel: true,
@@ -787,7 +774,6 @@ client.on(Events.InteractionCreate, async (i) => {
 client.on(Events.InteractionCreate, async (i) => {
   if (!i.isButton() || i.customId !== PREFIXO_BOTAO_SORTEIO) return;
 
-  // Trava: só quem tem um dos cargos liberados pode participar
   const podeParticipar =
     i.member?.roles?.cache?.some(
       (r) => CARGOS_PODEM_PARTICIPAR.includes(r.id) || r.id === cfg.cargoAdm,
@@ -836,7 +822,7 @@ client.on(Events.InteractionCreate, async (i) => {
     return negar('Nenhum sorteio foi iniciado ainda.');
   }
 
-  const lista =
+  const listaSorteio =
     sorteio.participantes.length > 0
       ? sorteio.participantes.map((id, idx) => `${idx + 1}. <@${id}> (\`${id}\`)`).join('\n')
       : '_Ninguém participou ainda._';
@@ -852,7 +838,7 @@ client.on(Events.InteractionCreate, async (i) => {
           { name: 'Status', value: sorteio.sorteado ? 'Encerrado' : 'Em andamento', inline: true },
           { name: 'Total de participantes', value: `${sorteio.participantes.length}`, inline: true },
           { name: 'Encerramento', value: `<t:${tsSegundos}:F> (<t:${tsSegundos}:R>)` },
-          { name: 'Participantes', value: lista.slice(0, 1024) },
+          { name: 'Participantes', value: listaSorteio.slice(0, 1024) },
         )
         .setFooter({ text: RODAPE })
         .setTimestamp(),
@@ -1009,7 +995,6 @@ if (cfg.canalCastigo) {
     const membro = msg.member ?? (await msg.guild.members.fetch(msg.author.id).catch(() => null));
     if (!membro) return;
 
-    // Isenta ADM — mensagem legítima da administração não deve ser punida
     if (membro.permissions.has('Administrator') || membro.roles.cache.has(cfg.cargoAdm)) return;
 
     try {
