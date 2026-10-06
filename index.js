@@ -501,22 +501,17 @@ function montarEmbedRelatorio(p) {
   const placar =
     p.placarAliados !== '' && p.placarEixo !== '' ? `Aliados ${p.placarAliados} x ${p.placarEixo} Eixo` : 'Placar indisponível';
 
-  const lista = (v) => (Array.isArray(v) ? v : []);
-  const secoes = [];
-  let aviso = '';
-  if (p.temClasses) {
-    secoes.push(['🪖 Infantaria', lista(p.infantaria)], ['🛡️ Tanques', lista(p.tanques)], ['💥 Artilharia', lista(p.artilharia)]);
-  } else {
-    const nomes = String(p.nomes || '').split(',').map((x) => x.trim()).filter(Boolean);
-    secoes.push(['👥 Jogadores Caveiras', nomes]);
-    aviso = '\n_Classes ainda não registradas para esta partida._';
-  }
-
-  const campos = secoes.filter(([, nomes]) => nomes.length > 0).flatMap(([titulo, nomes]) => camposDaSecao(titulo, nomes));
+  // Todos os Caveiras da partida, em ordem alfabética (ignorando a tag do clã)
+  const semTag = (x) => String(x).replace(/ャ/g, '').trim();
+  const brutos = Array.isArray(p.participantes) ? p.participantes : String(p.nomes || '').split(',');
+  const participantes = brutos
+    .map((x) => String(x).trim())
+    .filter(Boolean)
+    .sort((a, b) => semTag(a).localeCompare(semTag(b), 'pt-BR', { sensitivity: 'base' }));
 
   const descricao =
     `📍 **${cortar(p.servidor, 30) || '?'}** · 🕒 ${p.inicio || 'sem data'}\n` +
-    `⚔️ Lado: **${p.lado || 'Desconhecido'}** · 👥 **${p.caveiras}** Caveiras (de ${p.total} jogadores)${aviso}`;
+    `⚔️ Lado: **${p.lado || 'Desconhecido'}** · 👥 **${p.caveiras}** Caveiras (de ${p.total} jogadores)`;
 
   const embed = new EmbedBuilder()
     .setColor(cores[p.resultado] ?? 0x000000)
@@ -525,7 +520,7 @@ function montarEmbedRelatorio(p) {
     .setFooter({
       text: `🗺️ ${cortar(p.mapa, 50) || 'Mapa desconhecido'} • ${icones[p.resultado] || '⚪'} ${resultado} • ${placar} • ⏱️ ${formatarDuracao(p.duracao)}`,
     });
-  if (campos.length) embed.addFields(campos);
+  if (participantes.length) embed.addFields(camposDaSecao('👥 PARTICIPANTES', participantes));
   return embed;
 }
 
