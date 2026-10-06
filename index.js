@@ -668,7 +668,10 @@ client.on(Events.InteractionCreate, async (i) => {
       await i.deferReply(); // o Apps Script pode demorar alguns segundos
 
       try {
-        const url = new URL(cfg.urlPlanilhaApi);
+        const url = new URL(cfg.urlPlanilhaApi.trim().replace(/^["']|["']$/g, ''));
+        if (!url.pathname.endsWith('/exec')) {
+          throw new Error('A URL_PLANILHA_API precisa terminar em /exec (a URL de implantação do Web App, não a do editor nem a /dev).');
+        }
         url.searchParams.set('limit', '10');
 
         const resp = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(25000) });
@@ -679,7 +682,12 @@ client.on(Events.InteractionCreate, async (i) => {
         try {
           dados = JSON.parse(corpo);
         } catch {
-          throw new Error('A URL não devolveu JSON. Confira se é a URL terminada em /exec e se a implantação está com acesso para "Qualquer pessoa".');
+          const host = (() => { try { return new URL(resp.url).hostname; } catch { return '?'; } })();
+          console.error(`[sheets] Resposta não-JSON de ${host} (HTTP ${resp.status}): ${corpo.slice(0, 300).replace(/\s+/g, ' ')}`);
+          if (host.includes('accounts.google.com')) {
+            throw new Error('O Google pediu login. Na implantação do Apps Script, "Quem pode acessar" precisa ser "Qualquer pessoa".');
+          }
+          throw new Error('A URL não devolveu JSON. Confira se é a URL /exec da implantação atual e se o acesso é "Qualquer pessoa". O início da resposta está nos logs do Render.');
         }
 
         if (!Array.isArray(dados)) throw new Error(dados?.erro || 'Resposta inesperada da planilha.');
