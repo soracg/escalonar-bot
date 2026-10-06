@@ -453,6 +453,31 @@ async function sortearGanhador(client) {
   } catch (e) {}
 }
 
+// ---------- Relatório de partidas (planilha / Apps Script) ----------
+const cortar = (txt, max) => {
+  const t = String(txt ?? '').trim();
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+};
+
+function formatarRelatorioPartidas(partidas) {
+  const icones = { 'Vitória': '🟢', 'Derrota': '🔴', 'Empate': '🟡' };
+  const cont = { 'Vitória': 0, 'Derrota': 0, 'Empate': 0 };
+
+  const blocos = partidas.map((p) => {
+    if (p.resultado in cont) cont[p.resultado] += 1;
+    const icone = icones[p.resultado] || '⚪';
+    const placar =
+      p.placarAliados !== '' && p.placarEixo !== '' ? `Aliados ${p.placarAliados} x ${p.placarEixo} Eixo` : 'Placar indisponível';
+    const linha1 = `${icone} **${cortar(p.mapa, 40) || 'Mapa desconhecido'}** — ${cortar(p.servidor, 20) || '?'}`;
+    const linha2 = `> ${p.resultado || 'Sem resultado'} · ${placar} · ${p.caveiras} Caveiras · ${p.inicio || 'sem data'}`;
+    const linha3 = p.nomes ? `\n> 👥 ${cortar(p.nomes, 110)}` : '';
+    return `${linha1}\n${linha2}${linha3}`;
+  });
+
+  const resumo = `**Últimas ${partidas.length} partidas:** ${cont['Vitória']}V · ${cont['Derrota']}D · ${cont['Empate']}E\n\n`;
+  return cortar(resumo + blocos.join('\n\n'), 4000);
+}
+
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildVoiceStates],
 });
@@ -464,18 +489,34 @@ client.once(Events.ClientReady, async (c) => {
   await restaurarBackupVoz(c);
   await mapearMembrosEmVoz(c);
 
-  if (cfg.deployCmds) {
-    try {
-      const rest = new REST().setToken(cfg.token);
-      await rest.put(Routes.applicationGuildCommands(cfg.clientId, cfg.guildId), {
-        body: [
-          comandoEscalonar.toJSON(), comandoCheater.toJSON(), comandoDevolver.toJSON(),
-          comandoAvisoArmadilha.toJSON(), comandoCargosPainel.toJSON(), comandoSorteioKabum.toJSON(),
-          comandoSorteioEncerrar.toJSON(), comandoSorteioStatus.toJSON(), comandoRelatorio.toJSON(),
-        ],
-      });
-      console.log(`Comandos registrados.`);
-    } catch (err) { console.error('Falha comandos:', err); }
+  // Registra os comandos quando DEPLOY_CMDS=true OU quando algum comando do bot ainda não existe no servidor
+  try {
+    const rest = new REST().setToken(cfg.token);
+    const corpo = [
+      comandoEscalonar, comandoCheater, comandoDevolver,
+      comandoAvisoArmadilha, comandoCargosPainel, comandoSorteioKabum,
+      comandoSorteioEncerrar, comandoSorteioStatus, comandoRelatorio,
+    ].map((cmd) => cmd.toJSON());
+
+    let registrar = cfg.deployCmds;
+    if (!registrar) {
+      const atuais = await rest.get(Routes.applicationGuildCommands(cfg.clientId, cfg.guildId));
+      const nomes = new Set(atuais.map((cmd) => cmd.name));
+      const faltando = corpo.filter((cmd) => !nomes.has(cmd.name)).map((cmd) => cmd.name);
+      if (faltando.length) {
+        console.log(`Comandos faltando no servidor: ${faltando.join(', ')} — registrando.`);
+        registrar = true;
+      }
+    }
+
+    if (registrar) {
+      await rest.put(Routes.applicationGuildCommands(cfg.clientId, cfg.guildId), { body: corpo });
+      console.log(`Comandos registrados (${corpo.length}).`);
+    } else {
+      console.log('Comandos já estão registrados no servidor.');
+    }
+  } catch (err) {
+    console.error('Falha ao registrar comandos (confira CLIENT_ID, GUILD_ID e se o bot foi convidado com o escopo applications.commands):', err);
   }
 
   console.log(`Online como ${c.user.tag}`);
@@ -620,35 +661,44 @@ client.on(Events.InteractionCreate, async (i) => {
       return i.reply({ content: 'Aviso postado.', flags: EPH });
       
     } else if (cmd === 'relatorio') {
-      // 🚀 NOVA INTEGRAÇÃO: Google Sheets
+      // Integração com o Google Sheets (Apps Script publicado como Web App)
       if (!isMod) return i.reply({ content: 'Restrito para administração.', flags: EPH });
       if (!cfg.urlPlanilhaApi) return i.reply({ content: 'Falta configurar a URL_PLANILHA_API no Render.', flags: EPH });
 
-      await i.deferReply(); // O bot indica ao Discord que está processando a chamada
+      await i.deferReply(); // o Apps Script pode demorar alguns segundos
 
       try {
-        const response = await fetch(cfg.urlPlanilhaApi);
-        const dados = await response.json();
+        const url = new URL(cfg.urlPlanilhaApi);
+        url.searchParams.set('limit', '10');
 
-        if (!dados || dados.length === 0) {
-          return i.editReply('A planilha está vazia ou os dados não foram encontrados.');
+        const resp = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(25000) });
+        if (!resp.ok) throw new Error(`A planilha respondeu HTTP ${resp.status}.`);
+
+        const corpo = await resp.text();
+        let dados;
+        try {
+          dados = JSON.parse(corpo);
+        } catch {
+          throw new Error('A URL não devolveu JSON. Confira se é a URL terminada em /exec e se a implantação está com acesso para "Qualquer pessoa".');
         }
 
-        let textoRelatorio = '';
-        dados.forEach(d => {
-          textoRelatorio += `**Operador:** \`${d.player}\` | **Mapa:** ${d.mapa} | **Pontos:** ${d.pontos}\n`;
-        });
+        if (!Array.isArray(dados)) throw new Error(dados?.erro || 'Resposta inesperada da planilha.');
+        if (dados.length === 0) return i.editReply('A planilha ainda não tem partidas registradas.');
+        if (dados[0].player !== undefined && dados[0].servidor === undefined) {
+          throw new Error('O Apps Script ainda está na versão antiga. Publique de novo: Implantar > Gerenciar implantações > Nova versão.');
+        }
 
         const embed = new EmbedBuilder()
-          .setColor(0x000000) 
-          .setTitle('💀 RELATÓRIO DE OPERAÇÃO - CAVEIRAS 💀')
-          .setDescription(textoRelatorio)
-          .setFooter({ text: RODAPE });
+          .setColor(0x000000)
+          .setTitle('💀 RELATÓRIO DE OPERAÇÕES - CAVEIRAS 💀')
+          .setDescription(formatarRelatorioPartidas(dados))
+          .setFooter({ text: RODAPE })
+          .setTimestamp();
 
         await i.editReply({ embeds: [embed] });
       } catch (err) {
         console.error('[sheets] Erro ao buscar os dados da planilha:', err);
-        await i.editReply('Ocorreu um erro ao conectar com o Google Sheets. Verifique a URL gerada.');
+        await i.editReply(`❌ Não consegui ler a planilha: ${err.message}`).catch(() => {});
       }
     }
   } else if (i.isButton()) {
