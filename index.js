@@ -46,6 +46,7 @@ const cfg = {
   castigoAlertaChannel: env.CASTIGO_ALERTA_CHANNEL_ID || null,
   backupChannel: env.BACKUP_CHANNEL_ID || env.LOG_CHANNEL_ID || null,
   deployCmds: (env.DEPLOY_CMDS ?? 'false') === 'true',
+  urlPlanilhaApi: env.URL_PLANILHA_API || null, // URL gerada no Apps Script
   
   // ---------- Canais de Voz & Ranking ----------
   canalBackupVoz: '1556730438104514670',
@@ -118,7 +119,7 @@ async function enviarEm(guild, canalId, payload) {
 const CARGOS_PAINEL = [
   { id: '1555231437651972201', label: '💣 Hell Let Loose' },
   { id: '1555231449907470506', label: '🐶 Wardogs' },
-  { id: '1555235580625944576', label: '🎖️️ Premiações' },
+  { id: '1555235580625944576', label: '🎖 Premiações' },
   { id: '1555235317550948434', label: '🪖 Eventos' },
   { id: '1555235262018228295', label: '🎮 Casual' },
   { id: '1555235062918680668', label: '🏆 Competitivo' },
@@ -158,6 +159,9 @@ const comandoDevolver = new SlashCommandBuilder()
 const comandoSorteioKabum = new SlashCommandBuilder()
   .setName('sorteiovipkabum').setDescription('Anuncia sorteio Kabum (só ADM)')
   .addIntegerOption((o) => o.setName('dias').setDescription('Duração').setMinValue(1).setMaxValue(30)).setDMPermission(false);
+
+const comandoRelatorio = new SlashCommandBuilder()
+  .setName('relatorio').setDescription('Puxa o relatório de operações da planilha (só ADM)').setDMPermission(false);
 
 const comandoSorteioEncerrar = new SlashCommandBuilder().setName('sorteio-encerrar').setDescription('Encerra sorteio ativo (só ADM)').setDMPermission(false);
 const comandoSorteioStatus = new SlashCommandBuilder().setName('sorteio-status').setDescription('Mostra quem está participando (só ADM)').setDMPermission(false);
@@ -273,7 +277,6 @@ async function restaurarBackupVoz(client) {
       const salvo = await resp.json();
       
       if (salvo && typeof salvo === 'object') {
-        // Força o bot a sempre carregar exatamente o que está no arquivo voz-backup.json
         temposVoz = salvo;
         salvarVozLocal();
         console.log('[voz] Dados de voz restaurados com sucesso do voz-backup.json.');
@@ -311,22 +314,18 @@ async function atualizarRanking(client) {
       .setFooter({ text: 'Atualizado automaticamente a cada 2 minutos • ' + RODAPE })
       .setTimestamp();
 
-    // Busca as últimas mensagens do canal
     const ultimas = await canal.messages.fetch({ limit: 10 });
     const minhasMsgs = Array.from(ultimas.values()).filter(m => m.author.id === client.user.id);
 
     if (minhasMsgs.length > 0) {
-      // Pega SEMPRE a primeira mensagem enviada pelo bot para editar
       const primeiraMsg = minhasMsgs[0];
       msgRankingId = primeiraMsg.id;
       await primeiraMsg.edit({ embeds: [embed] });
 
-      // Se houver mensagens extras (a segunda/última), apaga todas
       for (let i = 1; i < minhasMsgs.length; i++) {
         await minhasMsgs[i].delete().catch(() => {});
       }
     } else {
-      // Se ainda não existir nenhuma mensagem, envia uma nova
       const enviada = await canal.send({ embeds: [embed] });
       msgRankingId = enviada.id;
     }
@@ -472,7 +471,7 @@ client.once(Events.ClientReady, async (c) => {
         body: [
           comandoEscalonar.toJSON(), comandoCheater.toJSON(), comandoDevolver.toJSON(),
           comandoAvisoArmadilha.toJSON(), comandoCargosPainel.toJSON(), comandoSorteioKabum.toJSON(),
-          comandoSorteioEncerrar.toJSON(), comandoSorteioStatus.toJSON(),
+          comandoSorteioEncerrar.toJSON(), comandoSorteioStatus.toJSON(), comandoRelatorio.toJSON(),
         ],
       });
       console.log(`Comandos registrados.`);
@@ -619,6 +618,38 @@ client.on(Events.InteractionCreate, async (i) => {
         embeds: [new EmbedBuilder().setColor(COR.alerta).setTitle('⚠️ REGRA IMPORTANTE: Regras de Armadilha').setDescription('Não perdoe armadilhas! Fique de olho no jogo.').setFooter({ text: RODAPE })],
       });
       return i.reply({ content: 'Aviso postado.', flags: EPH });
+      
+    } else if (cmd === 'relatorio') {
+      // 🚀 NOVA INTEGRAÇÃO: Google Sheets
+      if (!isMod) return i.reply({ content: 'Restrito para administração.', flags: EPH });
+      if (!cfg.urlPlanilhaApi) return i.reply({ content: 'Falta configurar a URL_PLANILHA_API no Render.', flags: EPH });
+
+      await i.deferReply(); // O bot indica ao Discord que está processando a chamada
+
+      try {
+        const response = await fetch(cfg.urlPlanilhaApi);
+        const dados = await response.json();
+
+        if (!dados || dados.length === 0) {
+          return i.editReply('A planilha está vazia ou os dados não foram encontrados.');
+        }
+
+        let textoRelatorio = '';
+        dados.forEach(d => {
+          textoRelatorio += `**Operador:** \`${d.player}\` | **Mapa:** ${d.mapa} | **Pontos:** ${d.pontos}\n`;
+        });
+
+        const embed = new EmbedBuilder()
+          .setColor(0x000000) 
+          .setTitle('💀 RELATÓRIO DE OPERAÇÃO - CAVEIRAS 💀')
+          .setDescription(textoRelatorio)
+          .setFooter({ text: RODAPE });
+
+        await i.editReply({ embeds: [embed] });
+      } catch (err) {
+        console.error('[sheets] Erro ao buscar os dados da planilha:', err);
+        await i.editReply('Ocorreu um erro ao conectar com o Google Sheets. Verifique a URL gerada.');
+      }
     }
   } else if (i.isButton()) {
     if (i.customId === PREFIXO_BOTAO_SORTEIO) {
