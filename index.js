@@ -37,6 +37,7 @@ const cfg = {
   catAtendimento: env.CATEGORIA_ATENDIMENTO_ID,
   catEscalonado: env.CATEGORIA_ESCALONADO_ID,
   cargoAdm: env.CARGO_ADM_ID,
+  cargoModerador: env.CARGO_MODERADOR_ID || '1404521279775834184', // também pode usar o /relatorio
   cargosAtendimento: lista(env.CARGOS_ATENDIMENTO_IDS),
   logChannel: env.LOG_CHANNEL_ID || null,
   alertaChannel: env.ALERTA_CHANNEL_ID || null,
@@ -161,7 +162,10 @@ const comandoSorteioKabum = new SlashCommandBuilder()
   .addIntegerOption((o) => o.setName('dias').setDescription('Duração').setMinValue(1).setMaxValue(30)).setDMPermission(false);
 
 const comandoRelatorio = new SlashCommandBuilder()
-  .setName('relatorio').setDescription('Puxa o relatório de operações da planilha (só ADM)').setDMPermission(false);
+  .setName('relatorio').setDescription('Puxa o relatório de operações da planilha (ADM e moderação)').setDMPermission(false)
+  .addIntegerOption((o) =>
+    o.setName('partida').setDescription('Qual partida com Caveiras mostrar (1 = a mais recente)').setMinValue(1).setMaxValue(10),
+  );
 
 const comandoSorteioEncerrar = new SlashCommandBuilder().setName('sorteio-encerrar').setDescription('Encerra sorteio ativo (só ADM)').setDMPermission(false);
 const comandoSorteioStatus = new SlashCommandBuilder().setName('sorteio-status').setDescription('Mostra quem está participando (só ADM)').setDMPermission(false);
@@ -459,23 +463,70 @@ const cortar = (txt, max) => {
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;
 };
 
-function formatarRelatorioPartidas(partidas) {
+// Tira a tag do clã e escapa caracteres que quebrariam a formatação do Discord
+const nomeLimpo = (nome) => {
+  const original = String(nome ?? '').trim();
+  const semTag = original.replace(/ャ/g, '').replace(/\s+/g, ' ').trim();
+  return cortar(semTag || original, 22).replace(/([\\*_~`|>])/g, '\\$1');
+};
+
+const formatarDuracao = (min) => {
+  const m = Math.round(Number(min) || 0);
+  if (!m) return 'n/d';
+  const h = Math.floor(m / 60);
+  return h ? `${h}h${String(m % 60).padStart(2, '0')}min` : `${m}min`;
+};
+
+// Uma seção = 3 campos "inline" lado a lado (até 3 colunas de largura), com o título na primeira coluna.
+function camposDaSecao(titulo, nomes) {
+  const n = nomes.length;
+  const colunas = Math.min(3, Math.max(1, Math.ceil(n / 3)));
+  const porColuna = Math.ceil(n / colunas);
+  const campos = [];
+  for (let c = 0; c < 3; c++) {
+    const fatia = c < colunas ? nomes.slice(c * porColuna, (c + 1) * porColuna) : [];
+    campos.push({
+      name: c === 0 ? cortar(`${titulo} (${n})`, 256) : '\u200b',
+      value: fatia.length ? fatia.map((x) => `• ${nomeLimpo(x)}`).join('\n').slice(0, 1024) : '\u200b',
+      inline: true,
+    });
+  }
+  return campos;
+}
+
+function montarEmbedRelatorio(p) {
+  const cores = { 'Vitória': 0x22c55e, 'Derrota': 0xef4444, 'Empate': 0xf59e0b };
   const icones = { 'Vitória': '🟢', 'Derrota': '🔴', 'Empate': '🟡' };
-  const cont = { 'Vitória': 0, 'Derrota': 0, 'Empate': 0 };
+  const resultado = p.resultado || 'Sem resultado';
+  const placar =
+    p.placarAliados !== '' && p.placarEixo !== '' ? `Aliados ${p.placarAliados} x ${p.placarEixo} Eixo` : 'Placar indisponível';
 
-  const blocos = partidas.map((p) => {
-    if (p.resultado in cont) cont[p.resultado] += 1;
-    const icone = icones[p.resultado] || '⚪';
-    const placar =
-      p.placarAliados !== '' && p.placarEixo !== '' ? `Aliados ${p.placarAliados} x ${p.placarEixo} Eixo` : 'Placar indisponível';
-    const linha1 = `${icone} **${cortar(p.mapa, 40) || 'Mapa desconhecido'}** — ${cortar(p.servidor, 20) || '?'}`;
-    const linha2 = `> ${p.resultado || 'Sem resultado'} · ${placar} · ${p.caveiras} Caveiras · ${p.inicio || 'sem data'}`;
-    const linha3 = p.nomes ? `\n> 👥 ${cortar(p.nomes, 110)}` : '';
-    return `${linha1}\n${linha2}${linha3}`;
-  });
+  const lista = (v) => (Array.isArray(v) ? v : []);
+  const secoes = [];
+  let aviso = '';
+  if (p.temClasses) {
+    secoes.push(['🪖 Infantaria', lista(p.infantaria)], ['🛡️ Tanques', lista(p.tanques)], ['💥 Artilharia', lista(p.artilharia)]);
+  } else {
+    const nomes = String(p.nomes || '').split(',').map((x) => x.trim()).filter(Boolean);
+    secoes.push(['👥 Jogadores Caveiras', nomes]);
+    aviso = '\n_Classes ainda não registradas para esta partida._';
+  }
 
-  const resumo = `**Últimas ${partidas.length} partidas:** ${cont['Vitória']}V · ${cont['Derrota']}D · ${cont['Empate']}E\n\n`;
-  return cortar(resumo + blocos.join('\n\n'), 4000);
+  const campos = secoes.filter(([, nomes]) => nomes.length > 0).flatMap(([titulo, nomes]) => camposDaSecao(titulo, nomes));
+
+  const descricao =
+    `📍 **${cortar(p.servidor, 30) || '?'}** · 🕒 ${p.inicio || 'sem data'}\n` +
+    `⚔️ Lado: **${p.lado || 'Desconhecido'}** · 👥 **${p.caveiras}** Caveiras (de ${p.total} jogadores)${aviso}`;
+
+  const embed = new EmbedBuilder()
+    .setColor(cores[p.resultado] ?? 0x000000)
+    .setTitle('💀 RELATÓRIO DE OPERAÇÃO - CAVEIRAS 💀')
+    .setDescription(descricao)
+    .setFooter({
+      text: `🗺️ ${cortar(p.mapa, 50) || 'Mapa desconhecido'} • ${icones[p.resultado] || '⚪'} ${resultado} • ${placar} • ⏱️ ${formatarDuracao(p.duracao)}`,
+    });
+  if (campos.length) embed.addFields(campos);
+  return embed;
 }
 
 const client = new Client({
@@ -501,10 +552,19 @@ client.once(Events.ClientReady, async (c) => {
     let registrar = cfg.deployCmds;
     if (!registrar) {
       const atuais = await rest.get(Routes.applicationGuildCommands(cfg.clientId, cfg.guildId));
-      const nomes = new Set(atuais.map((cmd) => cmd.name));
-      const faltando = corpo.filter((cmd) => !nomes.has(cmd.name)).map((cmd) => cmd.name);
-      if (faltando.length) {
-        console.log(`Comandos faltando no servidor: ${faltando.join(', ')} — registrando.`);
+      const assinatura = (cmd) =>
+        JSON.stringify([
+          cmd.description,
+          (cmd.options || []).map((o) => [o.name, o.type, !!o.required, o.min_value ?? null, o.max_value ?? null]),
+        ]);
+      const pendentes = corpo
+        .filter((cmd) => {
+          const atual = atuais.find((x) => x.name === cmd.name);
+          return !atual || assinatura(atual) !== assinatura(cmd);
+        })
+        .map((cmd) => cmd.name);
+      if (pendentes.length) {
+        console.log(`Comandos novos ou alterados: ${pendentes.join(', ')} — registrando.`);
         registrar = true;
       }
     }
@@ -662,17 +722,20 @@ client.on(Events.InteractionCreate, async (i) => {
       
     } else if (cmd === 'relatorio') {
       // Integração com o Google Sheets (Apps Script publicado como Web App)
-      if (!isMod) return i.reply({ content: 'Restrito para administração.', flags: EPH });
+      const podeRelatorio = isMod || i.member.roles.cache.has(cfg.cargoModerador);
+      if (!podeRelatorio) return i.reply({ content: 'Restrito para administração e moderação.', flags: EPH });
       if (!cfg.urlPlanilhaApi) return i.reply({ content: 'Falta configurar a URL_PLANILHA_API no Render.', flags: EPH });
 
       await i.deferReply(); // o Apps Script pode demorar alguns segundos
 
       try {
+        const posicao = i.options.getInteger('partida') ?? 1;
+
         const url = new URL(cfg.urlPlanilhaApi.trim().replace(/^["']|["']$/g, ''));
         if (!url.pathname.endsWith('/exec')) {
           throw new Error('A URL_PLANILHA_API precisa terminar em /exec (a URL de implantação do Web App, não a do editor nem a /dev).');
         }
-        url.searchParams.set('limit', '10');
+        url.searchParams.set('limit', '25');
 
         const resp = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(25000) });
         if (!resp.ok) throw new Error(`A planilha respondeu HTTP ${resp.status}.`);
@@ -691,19 +754,18 @@ client.on(Events.InteractionCreate, async (i) => {
         }
 
         if (!Array.isArray(dados)) throw new Error(dados?.erro || 'Resposta inesperada da planilha.');
-        if (dados.length === 0) return i.editReply('A planilha ainda não tem partidas registradas.');
-        if (dados[0].player !== undefined && dados[0].servidor === undefined) {
+        if (dados.length > 0 && dados[0].player !== undefined && dados[0].servidor === undefined) {
           throw new Error('O Apps Script ainda está na versão antiga. Publique de novo: Implantar > Gerenciar implantações > Nova versão.');
         }
 
-        const embed = new EmbedBuilder()
-          .setColor(0x000000)
-          .setTitle('💀 RELATÓRIO DE OPERAÇÕES - CAVEIRAS 💀')
-          .setDescription(formatarRelatorioPartidas(dados))
-          .setFooter({ text: RODAPE })
-          .setTimestamp();
+        // Só partidas em que realmente havia Caveiras (tag ャ), da mais recente para a mais antiga
+        const partidas = dados.filter((d) => Number(d.caveiras) > 0).slice(0, 10);
+        if (partidas.length === 0) return i.editReply('Nenhuma partida com Caveiras (ャ) encontrada na planilha.');
 
-        await i.editReply({ embeds: [embed] });
+        const p = partidas[posicao - 1];
+        if (!p) return i.editReply(`Só encontrei ${partidas.length} partida(s) com Caveiras. Escolha um número de 1 a ${partidas.length}.`);
+
+        await i.editReply({ embeds: [montarEmbedRelatorio(p)] });
       } catch (err) {
         console.error('[sheets] Erro ao buscar os dados da planilha:', err);
         await i.editReply(`❌ Não consegui ler a planilha: ${err.message}`).catch(() => {});
